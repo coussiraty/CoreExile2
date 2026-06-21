@@ -1,30 +1,42 @@
 # MapClearBot — architecture & roadmap
 
-A foundation for an autonomous map-clearing bot built **only** on the ExileBridge
-SDK (entities, terrain, render-to-screen) + the shared `Input` helper.
+An autonomous map-clearing bot built **only** on the ExileBridge SDK (entities,
+terrain, render-to-screen) + the shared `Input` helper.
 
-## Current (skeleton)
-Per-frame priority state machine in `DrawUI`:
-1. **Combat** — aim at and attack the nearest valid monster within `CombatRange`
-   (optional line-of-sight via the walkable grid).
-2. **Loot** — move the cursor to the nearest ground `Item` and left-click.
-3. **Explore** — move toward the nearest monster anywhere, else toward the
-   farthest area tile (`ITerrain.TgtTiles`) as a rough outward push.
+## Implemented
+Per-frame priority state machine in `DrawUI` (throttled by `ActionDelayMs`;
+bookkeeping/drawing runs every frame):
+1. **Flee** — when life% ≤ `FleeLifePercent`, run directly away from the nearest
+   threat instead of fighting.
+2. **Combat** — attack the best monster in `CombatRange`, prioritised by rarity
+   then proximity, with optional grid line-of-sight.
+3. **Loot** — walk-click the nearest ground `Item` in `LootRange`, optional
+   metadata-path substring filter (`LootFilter`).
+4. **Explore** — frontier search (`Pathfinder.TryNearestFrontier`) finds the
+   nearest unexplored coarse cell; **A\*** (`Pathfinder.FindPath`) over the
+   walkable grid builds a real path; the bot walks it via a lookahead waypoint
+   (no wall-clipping). Visited cells are tracked so the whole map gets covered.
+5. **Transition** — when no frontier remains and `GoToTransitionWhenCleared` is
+   set, path to the nearest area-transition tile (`ITerrain.TgtTiles`).
 
-All input is throttled by `ActionDelayMs` and dispatched on the shared background
-`Input` worker (never blocks the overlay render thread).
+Robustness:
+- **A\*** and **frontier BFS** are bounded by `MaxPathNodes` so a frame can't hang.
+- **Stuck detection** — no progress for `StuckSeconds` ⇒ abandon the current
+  frontier (mark a block explored) and re-path.
+- Path recompute throttled by `PathRecomputeMs`; exploration resets on area change.
+- Optional on-screen **path/target debug draw** (`ShowPath`).
+- All synthetic input runs on the shared background `Input` worker.
 
 ## Not done yet (next steps)
-- **Pathfinding** over the walkable grid (A*) instead of click-in-direction; the
-  current explore has no obstacle avoidance and can get stuck on walls.
-- **Stuck detection / unstuck** (no progress over N seconds -> re-path).
-- **Item filtering** (rarity/name/value) before looting; needs SDK item/label data.
-- **Portals & waypoints** — open/enter portal, take waypoint, area transitions.
-- **Flask/buff upkeep** (delegate to AutoPot, or integrate ILife checks).
-- **Safety** — disengage on low life, avoid dangerous mods/ground effects.
-- **Movement skills** (dash/blink) and smarter target selection (packs, rarity).
+- **Item filtering by rarity/value** (needs item rarity/name in the SDK; only a
+  path substring is available today).
+- **Portals & waypoints** — open/enter portal, take waypoint, full area progression
+  loop (the transition step only walks to the tile).
+- **Flask/buff upkeep** — delegate to AutoPot or read `ILife` here.
+- **Movement skills** (dash/blink) and smarter combat (kiting, AoE positioning).
+- **Smoother path following** (string-pulling / funnel) and dynamic obstacle
+  avoidance for doors/blockages (`ITriggerableBlockage`).
 
 ## SDK gaps to fill for the above
 - Item rarity/name + ground label info (new component view).
-- A pathfinding/terrain query helper, or expose enough of `ITerrain` for A*.
-- Possibly an input "move command" abstraction if PoE2 changes movement.
+- Portal/waypoint UI hooks.

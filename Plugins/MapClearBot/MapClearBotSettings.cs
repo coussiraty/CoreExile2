@@ -36,10 +36,37 @@ namespace MapClearBot
         /// <summary>Whether to pick up ground items.</summary>
         public bool PickItems = true;
 
+        /// <summary>Only loot items whose metadata path contains this text (empty = all).</summary>
+        public string LootFilter = string.Empty;
+
         /// <summary>Require line of sight to a monster before attacking.</summary>
         public bool UseLineOfSight = true;
 
+        /// <summary>Flee when life drops to or below this percent (0 disables).</summary>
+        public int FleeLifePercent = 35;
+
         /// <summary>Minimum milliseconds between bot actions.</summary>
         public int ActionDelayMs = 150;
+
+        /// <summary>Coarse cell size (grid units) used to track explored areas.</summary>
+        public int ExploreCellSize = 12;
+
+        /// <summary>How many tiles ahead on the path to aim the move click.</summary>
+        public int LookaheadTiles = 14;
+
+        /// <summary>Recompute the path at most this often (ms).</summary>
+        public int PathRecomputeMs = 400;
+
+        /// <summary>Abandon an explore target after this many seconds without progress.</summary>
+        public float StuckSeconds = 2.0f;
+
+        /// <summary>A* expansion cap (bounds per-frame cost).</summary>
+        public int MaxPathNodes = 20000;
+
+        /// <summary>When the map is fully explored, head to the nearest area transition tile.</summary>
+        public bool GoToTransitionWhenCleared;
+
+        /// <summary>Draw the current path and target for debugging.</summary>
+        public bool ShowPath = true;
     }
 }

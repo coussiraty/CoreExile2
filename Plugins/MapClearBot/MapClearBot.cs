@@ -13,21 +13,30 @@ namespace MapClearBot
     using Newtonsoft.Json;
 
     /// <summary>
-    ///     A basic autonomous map-clearing bot (foundation). Per frame it runs a
-    ///     simple priority state machine over the SDK entity list:
-    ///     <list type="number">
-    ///         <item>Combat — attack the nearest monster in range.</item>
-    ///         <item>Loot — walk to and click the nearest ground item.</item>
-    ///         <item>Explore — move toward the nearest monster or an area tile.</item>
-    ///     </list>
-    ///     This is intentionally a skeleton: no real pathfinding, portal/waypoint
-    ///     handling, item filtering or stuck-detection yet (see ARCHITECTURE.md).
+    ///     Autonomous map-clearing bot built on the ExileBridge SDK. Per frame it runs
+    ///     a priority state machine — flee, combat, loot, explore (frontier search +
+    ///     A* over the walkable grid), then optionally head to an area transition.
+    ///     Movement follows a real path (no wall-clipping) with stuck detection. All
+    ///     work is bounded/throttled and input runs on the shared background worker.
     /// </summary>
     public sealed class MapClearBot : Plugin<MapClearBotSettings>
     {
+        private readonly Pathfinder pf = new();
+        private readonly HashSet<(int, int)> explored = new();
+
         private bool wasToggleDown;
         private DateTime lastAction = DateTime.MinValue;
         private string state = "idle";
+
+        private (int X, int Y) lastProgressPos;
+        private DateTime lastProgressTime = DateTime.MinValue;
+
+        private List<(int X, int Y)>? path;
+        private (int X, int Y) pathGoal;
+        private DateTime pathAt = DateTime.MinValue;
+        private float conv = 1f;
+
+        private IDisposable? areaToken;
 
         private string SettingsPath => Path.Combine(this.DirectoryPath, "config", "settings.json");
 
@@ -39,11 +48,15 @@ namespace MapClearBot
                 var json = File.ReadAllText(this.SettingsPath);
                 this.Settings = JsonConvert.DeserializeObject<MapClearBotSettings>(json) ?? new MapClearBotSettings();
             }
+
+            this.areaToken = this.Ctx.Events.OnAreaChange(this.ResetRun);
         }
 
         /// <inheritdoc />
         public override void OnDisable()
         {
+            this.areaToken?.Dispose();
+            this.areaToken = null;
         }
 
         /// <inheritdoc />
@@ -68,11 +81,6 @@ namespace MapClearBot
                 return;
             }
 
-            if ((DateTime.Now - this.lastAction).TotalMilliseconds < this.Settings.ActionDelayMs)
-            {
-                return;
-            }
-
             var ig = this.Ctx.Game.InGame;
             var self = ig.Player;
             if (self == null || !self.TryGetComponent<IRender>(out var selfRender))
@@ -81,53 +89,60 @@ namespace MapClearBot
             }
 
             var terrain = ig.Terrain;
-            var playerPos = selfRender.GridPosition;
-            var awake = this.Ctx.Entities.Awake;
+            this.pf.Bind(terrain);
+            this.conv = terrain.WorldToGridConvertor <= 0 ? 1f : terrain.WorldToGridConvertor;
 
-            // 1) Combat.
-            var monster = this.NearestMonster(awake, playerPos, terrain, this.Settings.CombatRange, requireLoS: this.Settings.UseLineOfSight);
-            if (monster != null)
+            var playerGrid = selfRender.GridPosition;
+            var pg = ((int)playerGrid.X, (int)playerGrid.Y);
+
+            this.MarkExplored(pg);
+            this.UpdateProgress(playerGrid);
+
+            if (this.Settings.ShowPath)
             {
-                this.Aim(monster);
-                if (this.Settings.AttackWithLeftClick)
-                {
-                    Input.Click(Input.MouseButton.Left);
-                }
-                else
-                {
-                    Input.PressKey(this.Settings.AttackKey);
-                }
+                this.DrawPath();
+            }
 
-                this.lastAction = DateTime.Now;
-                this.state = "combat";
+            // Throttle the action cadence (mouse/keys), not the bookkeeping above.
+            if ((DateTime.Now - this.lastAction).TotalMilliseconds < this.Settings.ActionDelayMs)
+            {
                 return;
             }
 
-            // 2) Loot.
+            var awake = this.Ctx.Entities.Awake;
+
+            // 1) Flee on low life.
+            if (this.TryFlee(self, selfRender, awake, playerGrid))
+            {
+                return;
+            }
+
+            // 2) Combat.
+            var monster = this.BestMonster(awake, playerGrid, pg);
+            if (monster != null)
+            {
+                this.AimAt(monster);
+                this.Attack();
+                this.path = null; // re-path after the fight
+                this.Act("combat");
+                return;
+            }
+
+            // 3) Loot.
             if (this.Settings.PickItems)
             {
-                var item = this.NearestItem(awake, playerPos, this.Settings.LootRange);
+                var item = this.NearestItem(awake, playerGrid);
                 if (item != null)
                 {
-                    this.Aim(item);
+                    this.AimAt(item);
                     Input.Click(Input.MouseButton.Left);
-                    this.lastAction = DateTime.Now;
-                    this.state = "loot";
+                    this.Act("loot");
                     return;
                 }
             }
 
-            // 3) Explore.
-            var target = this.ExploreTarget(awake, playerPos, terrain);
-            if (target.HasValue)
-            {
-                this.MoveToward(target.Value);
-                this.lastAction = DateTime.Now;
-                this.state = "explore";
-                return;
-            }
-
-            this.state = "idle (nothing to do)";
+            // 4) Explore (and 5) transition when cleared).
+            this.ExploreStep(pg);
         }
 
         /// <inheritdoc />
@@ -140,9 +155,7 @@ namespace MapClearBot
 
             ImGui.SameLine();
             ImGui.Text($"Toggle: {Input.KeyName(this.Settings.ToggleKey)}   State: {this.state}");
-
-            ImGui.Separator();
-            ImGui.TextWrapped("Foundation build: simple combat > loot > explore. No pathfinding/portals/item-filter yet.");
+            ImGui.Text($"Explored cells: {this.explored.Count}   Path: {(this.path?.Count ?? 0)}");
             ImGui.Separator();
 
             ImGui.Checkbox("Attack with left click", ref this.Settings.AttackWithLeftClick);
@@ -162,30 +175,48 @@ namespace MapClearBot
             ImGui.SliderFloat("Combat range", ref this.Settings.CombatRange, 10f, 150f);
             ImGui.SliderFloat("Loot range", ref this.Settings.LootRange, 10f, 150f);
             ImGui.Checkbox("Pick items", ref this.Settings.PickItems);
+            ImGui.SetNextItemWidth(220);
+            ImGui.InputText("Loot filter (path contains)", ref this.Settings.LootFilter, 64);
             ImGui.Checkbox("Use line of sight", ref this.Settings.UseLineOfSight);
+            ImGui.SliderInt("Flee life % (0 = off)", ref this.Settings.FleeLifePercent, 0, 90);
+            ImGui.Separator();
             ImGui.SliderInt("Action delay (ms)", ref this.Settings.ActionDelayMs, 50, 1000);
+            ImGui.SliderInt("Lookahead tiles", ref this.Settings.LookaheadTiles, 4, 40);
+            ImGui.SliderInt("Path recompute (ms)", ref this.Settings.PathRecomputeMs, 100, 2000);
+            ImGui.SliderFloat("Stuck seconds", ref this.Settings.StuckSeconds, 0.5f, 8f);
+            ImGui.SliderInt("Explore cell size", ref this.Settings.ExploreCellSize, 4, 40);
+            ImGui.SliderInt("Max path nodes", ref this.Settings.MaxPathNodes, 2000, 80000);
+            ImGui.Checkbox("Go to transition when cleared", ref this.Settings.GoToTransitionWhenCleared);
+            ImGui.Checkbox("Draw path", ref this.Settings.ShowPath);
 
             if (ImGui.Button("Save"))
             {
                 this.SaveSettings();
             }
+
+            ImGui.SameLine();
+            if (ImGui.Button("Reset exploration"))
+            {
+                this.ResetRun();
+            }
         }
 
-        private void HandleToggle()
+        // ====================================================================
+        //  State machine steps
+        // ====================================================================
+        private bool TryFlee(IEntity self, IRender selfRender, IReadOnlyCollection<IEntity> awake, Vector2 playerGrid)
         {
-            var down = this.Settings.ToggleKey != 0 && Input.IsKeyDown(this.Settings.ToggleKey);
-            if (down && !this.wasToggleDown)
+            if (this.Settings.FleeLifePercent <= 0 ||
+                !self.TryGetComponent<ILife>(out var life) ||
+                life.Health.Total <= 0 ||
+                life.Health.CurrentInPercent > this.Settings.FleeLifePercent)
             {
-                this.Settings.Enabled = !this.Settings.Enabled;
+                return false;
             }
 
-            this.wasToggleDown = down;
-        }
-
-        private IEntity? NearestMonster(IReadOnlyCollection<IEntity> awake, Vector2 playerPos, ITerrain terrain, float range, bool requireLoS)
-        {
-            IEntity? best = null;
-            var bestDist = float.MaxValue;
+            IEntity? threat = null;
+            var best = float.MaxValue;
+            var dangerRange = this.Settings.CombatRange * 1.5f;
             foreach (var e in awake)
             {
                 if (!IsValidMonster(e) || !e.TryGetComponent<IRender>(out var r))
@@ -193,28 +224,80 @@ namespace MapClearBot
                     continue;
                 }
 
-                var dist = Vector2.Distance(playerPos, r.GridPosition);
-                if (dist > range || dist >= bestDist)
+                var d = Vector2.Distance(playerGrid, r.GridPosition);
+                if (d < best && d <= dangerRange)
+                {
+                    best = d;
+                    threat = e;
+                }
+            }
+
+            if (threat == null || !threat.TryGetComponent<IRender>(out var tr))
+            {
+                return false;
+            }
+
+            // Run directly away from the nearest threat.
+            var pw = selfRender.WorldPosition;
+            var tw = tr.WorldPosition;
+            var away = new Vector2(pw.X - tw.X, pw.Y - tw.Y);
+            if (away.LengthSquared() < 0.001f)
+            {
+                away = new Vector2(1, 0);
+            }
+
+            away = Vector2.Normalize(away) * (this.Settings.CombatRange * this.conv);
+            var target = new Vector3(pw.X + away.X, pw.Y + away.Y, pw.Z);
+            if (this.PointAt(target))
+            {
+                this.Move();
+            }
+
+            this.path = null;
+            this.Act("flee");
+            return true;
+        }
+
+        private IEntity? BestMonster(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid, (int X, int Y) pg)
+        {
+            IEntity? best = null;
+            var bestScore = float.MinValue;
+            foreach (var e in awake)
+            {
+                if (!IsValidMonster(e) || !e.TryGetComponent<IRender>(out var r))
                 {
                     continue;
                 }
 
-                if (requireLoS && !Los.HasLineOfSight(terrain, playerPos, r.GridPosition))
+                var dist = Vector2.Distance(playerGrid, r.GridPosition);
+                if (dist > this.Settings.CombatRange)
                 {
                     continue;
                 }
 
-                bestDist = dist;
-                best = e;
+                if (this.Settings.UseLineOfSight &&
+                    !this.pf.HasLineOfSight(pg.X, pg.Y, (int)r.GridPosition.X, (int)r.GridPosition.Y))
+                {
+                    continue;
+                }
+
+                var rarity = e.TryGetComponent<IObjectMagicProperties>(out var omp) ? (int)omp.Rarity : 0;
+                var score = (rarity * 1000f) - dist; // higher rarity first, then nearer
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = e;
+                }
             }
 
             return best;
         }
 
-        private IEntity? NearestItem(IReadOnlyCollection<IEntity> awake, Vector2 playerPos, float range)
+        private IEntity? NearestItem(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid)
         {
             IEntity? best = null;
             var bestDist = float.MaxValue;
+            var filter = this.Settings.LootFilter;
             foreach (var e in awake)
             {
                 if (!e.IsValid || e.Type != EntityType.Item)
@@ -227,13 +310,19 @@ namespace MapClearBot
                     continue;
                 }
 
+                if (!string.IsNullOrWhiteSpace(filter) &&
+                    (e.Path == null || e.Path.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0))
+                {
+                    continue;
+                }
+
                 if (!e.TryGetComponent<IRender>(out var r))
                 {
                     continue;
                 }
 
-                var dist = Vector2.Distance(playerPos, r.GridPosition);
-                if (dist <= range && dist < bestDist)
+                var dist = Vector2.Distance(playerGrid, r.GridPosition);
+                if (dist <= this.Settings.LootRange && dist < bestDist)
                 {
                     bestDist = dist;
                     best = e;
@@ -243,87 +332,168 @@ namespace MapClearBot
             return best;
         }
 
-        private Vector3? ExploreTarget(IReadOnlyCollection<IEntity> awake, Vector2 playerPos, ITerrain terrain)
+        private void ExploreStep((int X, int Y) pg)
         {
-            // Prefer the nearest monster anywhere on screen to push toward packs.
-            IEntity? nearest = null;
-            var bestDist = float.MaxValue;
-            foreach (var e in awake)
+            var now = DateTime.Now;
+            var stuck = (now - this.lastProgressTime).TotalSeconds > this.Settings.StuckSeconds;
+            if (stuck)
             {
-                if (!IsValidMonster(e) || !e.TryGetComponent<IRender>(out var r))
-                {
-                    continue;
-                }
-
-                var dist = Vector2.Distance(playerPos, r.GridPosition);
-                if (dist < bestDist)
-                {
-                    bestDist = dist;
-                    nearest = e;
-                }
+                // Give up on the current frontier and skip a block around it.
+                this.MarkBlockExplored(this.pathGoal);
+                this.path = null;
+                this.lastProgressTime = now;
             }
 
-            if (nearest != null && nearest.TryGetComponent<IRender>(out var nr))
-            {
-                return nr.WorldPosition;
-            }
+            var needPath = this.path == null || this.path.Count < 2 ||
+                           (now - this.pathAt).TotalMilliseconds > this.Settings.PathRecomputeMs;
 
-            // Otherwise head toward the farthest known area tile (rough outward push).
-            var conv = terrain.WorldToGridConvertor;
-            if (conv > 0 && terrain.TgtTiles.Count > 0)
+            if (needPath)
             {
-                Vector2? farthest = null;
-                var far = -1f;
-                var scanned = 0;
-                foreach (var kv in terrain.TgtTiles)
+                if (this.pf.TryNearestFrontier(pg, this.explored, this.Settings.ExploreCellSize, this.Settings.MaxPathNodes, out var frontier))
                 {
-                    foreach (var tile in kv.Value)
+                    var p = this.pf.FindPath(pg, frontier, this.Settings.MaxPathNodes);
+                    if (p != null && p.Count >= 2)
                     {
-                        if (++scanned > 2000)
-                        {
-                            break;
-                        }
-
-                        var d = Vector2.Distance(playerPos, tile);
-                        if (d > far)
-                        {
-                            far = d;
-                            farthest = tile;
-                        }
+                        this.path = p;
+                        this.pathGoal = frontier;
+                        this.pathAt = now;
+                    }
+                    else
+                    {
+                        this.MarkBlockExplored(frontier); // unreachable; skip it
+                        this.path = null;
                     }
                 }
-
-                if (farthest.HasValue)
+                else if (this.Settings.GoToTransitionWhenCleared && this.TryPathToTransition(pg, now))
                 {
-                    return new Vector3(farthest.Value.X * conv, farthest.Value.Y * conv, 0f);
+                    // path set to nearest transition tile
+                }
+                else
+                {
+                    this.state = "cleared";
+                    return;
                 }
             }
 
-            return null;
-        }
-
-        private void Aim(IEntity entity)
-        {
-            if (entity.TryGetComponent<IRender>(out var r))
+            if (this.path != null && this.path.Count >= 2)
             {
-                this.PointAt(r.WorldPosition);
+                this.MoveAlongPath(pg);
+                this.Act("explore");
             }
         }
 
-        private void MoveToward(Vector3 world)
+        private bool TryPathToTransition((int X, int Y) pg, DateTime now)
         {
-            if (!this.PointAt(world))
+            var tiles = this.Ctx.Game.InGame.Terrain.TgtTiles;
+            (int X, int Y)? nearest = null;
+            var bestDist = float.MaxValue;
+            var scanned = 0;
+            foreach (var kv in tiles)
+            {
+                foreach (var tile in kv.Value)
+                {
+                    if (++scanned > 4000)
+                    {
+                        break;
+                    }
+
+                    var d = MathF.Abs(tile.X - pg.X) + MathF.Abs(tile.Y - pg.Y);
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        nearest = ((int)tile.X, (int)tile.Y);
+                    }
+                }
+            }
+
+            if (nearest == null)
+            {
+                return false;
+            }
+
+            var p = this.pf.FindPath(pg, nearest.Value, this.Settings.MaxPathNodes);
+            if (p == null || p.Count < 2)
+            {
+                return false;
+            }
+
+            this.path = p;
+            this.pathGoal = nearest.Value;
+            this.pathAt = now;
+            return true;
+        }
+
+        // ====================================================================
+        //  Movement / input
+        // ====================================================================
+        private void MoveAlongPath((int X, int Y) pg)
+        {
+            if (this.path == null)
             {
                 return;
             }
 
+            (int X, int Y)? chosen = null;
+            (int X, int Y)? firstOnScreen = null;
+            var lookahead = this.Settings.LookaheadTiles;
+
+            foreach (var pt in this.path)
+            {
+                var d = Math.Abs(pt.X - pg.X) + Math.Abs(pt.Y - pg.Y);
+                if (!this.GridToScreen(pt, out _))
+                {
+                    continue;
+                }
+
+                firstOnScreen ??= pt;
+                if (d <= lookahead)
+                {
+                    chosen = pt; // keep the farthest within lookahead
+                }
+            }
+
+            var target = chosen ?? firstOnScreen;
+            if (target == null)
+            {
+                return;
+            }
+
+            if (this.GridToScreen(target.Value, out var screen))
+            {
+                Input.MoveMouse((int)screen.X, (int)screen.Y);
+                this.Move();
+            }
+        }
+
+        private void Move()
+        {
             if (this.Settings.MoveWithLeftClick)
             {
                 Input.Click(Input.MouseButton.Left);
             }
-            else
+            else if (this.Settings.MoveKey != 0)
             {
                 Input.PressKey(this.Settings.MoveKey);
+            }
+        }
+
+        private void Attack()
+        {
+            if (this.Settings.AttackWithLeftClick)
+            {
+                Input.Click(Input.MouseButton.Left);
+            }
+            else if (this.Settings.AttackKey != 0)
+            {
+                Input.PressKey(this.Settings.AttackKey);
+            }
+        }
+
+        private void AimAt(IEntity entity)
+        {
+            if (entity.TryGetComponent<IRender>(out var r))
+            {
+                this.PointAt(r.WorldPosition);
             }
         }
 
@@ -338,6 +508,108 @@ namespace MapClearBot
 
             Input.MoveMouse((int)(window.X + screen.X), (int)(window.Y + screen.Y));
             return true;
+        }
+
+        // Converts a grid cell to an absolute desktop point, returning false if off-screen.
+        private bool GridToScreen((int X, int Y) cell, out Vector2 abs)
+        {
+            var world = new Vector3(cell.X * this.conv, cell.Y * this.conv, 0f);
+            var screen = this.Ctx.Render.WorldToScreen(world, 0f);
+            var window = this.Ctx.Game.WindowArea;
+            abs = new Vector2(window.X + screen.X, window.Y + screen.Y);
+            return screen.X >= 0 && screen.Y >= 0 && screen.X <= window.Width && screen.Y <= window.Height;
+        }
+
+        // ====================================================================
+        //  Bookkeeping
+        // ====================================================================
+        private void HandleToggle()
+        {
+            var down = this.Settings.ToggleKey != 0 && Input.IsKeyDown(this.Settings.ToggleKey);
+            if (down && !this.wasToggleDown)
+            {
+                this.Settings.Enabled = !this.Settings.Enabled;
+                if (!this.Settings.Enabled)
+                {
+                    this.path = null;
+                }
+            }
+
+            this.wasToggleDown = down;
+        }
+
+        private void Act(string newState)
+        {
+            this.lastAction = DateTime.Now;
+            this.state = newState;
+        }
+
+        private void MarkExplored((int X, int Y) pg)
+        {
+            var size = Math.Max(1, this.Settings.ExploreCellSize);
+            this.explored.Add((pg.X / size, pg.Y / size));
+        }
+
+        private void MarkBlockExplored((int X, int Y) cell)
+        {
+            var size = Math.Max(1, this.Settings.ExploreCellSize);
+            var cx = cell.X / size;
+            var cy = cell.Y / size;
+            for (var dy = -1; dy <= 1; dy++)
+            {
+                for (var dx = -1; dx <= 1; dx++)
+                {
+                    this.explored.Add((cx + dx, cy + dy));
+                }
+            }
+        }
+
+        private void UpdateProgress(Vector2 playerGrid)
+        {
+            var pg = ((int)playerGrid.X, (int)playerGrid.Y);
+            if (this.lastProgressTime == DateTime.MinValue ||
+                Math.Abs(pg.Item1 - this.lastProgressPos.X) + Math.Abs(pg.Item2 - this.lastProgressPos.Y) > 3)
+            {
+                this.lastProgressPos = pg;
+                this.lastProgressTime = DateTime.Now;
+            }
+        }
+
+        private void ResetRun()
+        {
+            this.explored.Clear();
+            this.path = null;
+            this.lastProgressTime = DateTime.MinValue;
+            this.state = "idle";
+        }
+
+        private void DrawPath()
+        {
+            if (this.path == null || this.path.Count < 2)
+            {
+                return;
+            }
+
+            var dl = ImGui.GetBackgroundDrawList();
+            var window = this.Ctx.Game.WindowArea;
+            var line = Draw.Color(new Vector4(0.2f, 0.9f, 1f, 0.8f));
+            Vector2? prev = null;
+            foreach (var pt in this.path)
+            {
+                var world = new Vector3(pt.X * this.conv, pt.Y * this.conv, 0f);
+                var s = this.Ctx.Render.WorldToScreen(world, 0f);
+                var p = new Vector2(window.X + s.X, window.Y + s.Y);
+                if (prev.HasValue)
+                {
+                    dl.AddLine(prev.Value, p, line, 2f);
+                }
+
+                prev = p;
+            }
+
+            var goalWorld = new Vector3(this.pathGoal.X * this.conv, this.pathGoal.Y * this.conv, 0f);
+            var gs = this.Ctx.Render.WorldToScreen(goalWorld, 0f);
+            dl.AddCircleFilled(new Vector2(window.X + gs.X, window.Y + gs.Y), 6f, Draw.Color(new Vector4(1f, 0.5f, 0f, 1f)));
         }
 
         private static bool IsValidMonster(IEntity e)
@@ -359,70 +631,6 @@ namespace MapClearBot
             }
 
             return true;
-        }
-    }
-
-    /// <summary>Minimal Bresenham line-of-sight over the SDK walkable grid.</summary>
-    internal static class Los
-    {
-        public static bool HasLineOfSight(ITerrain terrain, Vector2 from, Vector2 to)
-        {
-            int x0 = (int)from.X, y0 = (int)from.Y, x1 = (int)to.X, y1 = (int)to.Y;
-            int dx = Math.Abs(x1 - x0), dy = Math.Abs(y1 - y0);
-            int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-            int err = dx - dy;
-            var steps = 0;
-
-            while (true)
-            {
-                if (++steps > 3 && Walkable(terrain, x0, y0) <= 2)
-                {
-                    return false;
-                }
-
-                if (x0 == x1 && y0 == y1)
-                {
-                    return true;
-                }
-
-                var e2 = 2 * err;
-                if (e2 > -dy)
-                {
-                    err -= dy;
-                    x0 += sx;
-                }
-
-                if (e2 < dx)
-                {
-                    err += dx;
-                    y0 += sy;
-                }
-            }
-        }
-
-        private static int Walkable(ITerrain terrain, int x, int y)
-        {
-            var data = terrain?.WalkableData;
-            var bpr = terrain?.BytesPerRow ?? 0;
-            if (data == null || data.Length == 0 || bpr <= 0)
-            {
-                return 0;
-            }
-
-            var rows = data.Length / bpr;
-            var width = bpr * 2;
-            if (x < 0 || y < 0 || x >= width || y >= rows)
-            {
-                return 0;
-            }
-
-            var index = (y * bpr) + (x / 2);
-            if (index >= data.Length)
-            {
-                return 0;
-            }
-
-            return (data[index] >> ((x % 2 == 0) ? 0 : 4)) & 0xF;
         }
     }
 }
