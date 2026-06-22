@@ -18,8 +18,10 @@ namespace FollowBot
     /// </summary>
     public sealed class FollowBot : Plugin<FollowBotSettings>
     {
+        private readonly MovementController mover = new();
         private DateTime lastMove = DateTime.MinValue;
         private string status = "idle";
+        private string captureToken = string.Empty;
 
         private string SettingsPath => Path.Combine(this.DirectoryPath, "config", "settings.json");
 
@@ -36,6 +38,7 @@ namespace FollowBot
         /// <inheritdoc />
         public override void OnDisable()
         {
+            this.mover.Stop();
         }
 
         /// <inheritdoc />
@@ -48,56 +51,81 @@ namespace FollowBot
         /// <inheritdoc />
         public override void DrawUI()
         {
+            try
+            {
+                this.Step();
+            }
+            catch
+            {
+                this.mover.Stop();
+                throw;
+            }
+        }
+
+        private void Step()
+        {
             if (!this.Settings.Enabled || !this.Ctx.Game.IsInGame || !this.Ctx.Game.IsForeground)
             {
+                this.mover.Stop();
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(this.Settings.LeaderName) || this.Ctx.Ui.IsAnyLargePanelOpen)
             {
+                this.mover.Stop();
                 return;
             }
 
             var self = this.Ctx.Game.InGame.Player;
             if (self == null || !self.TryGetComponent<IRender>(out var selfRender))
             {
+                this.mover.Stop();
                 return;
             }
 
             var leader = this.FindLeader();
-            if (leader == null)
+            if (leader == null || !leader.TryGetComponent<IRender>(out var leaderRender))
             {
+                this.mover.Stop();
                 this.status = "leader not found";
-                return;
-            }
-
-            if (!leader.TryGetComponent<IRender>(out var leaderRender))
-            {
                 return;
             }
 
             var distance = Vector2.Distance(selfRender.GridPosition, leaderRender.GridPosition);
             if (distance <= this.Settings.FollowDistance)
             {
+                this.mover.Stop();
                 this.status = $"in range ({distance:F0})";
                 return;
             }
 
+            var leaderWorld = leaderRender.WorldPosition;
+            var leaderScreen = this.Ctx.Render.WorldToScreen(leaderWorld, leaderWorld.Z);
+
+            if (this.Settings.Movement == MovementMode.Wasd)
+            {
+                this.mover.Configure(this.Settings.MoveUpKey, this.Settings.MoveDownKey, this.Settings.MoveLeftKey, this.Settings.MoveRightKey);
+                var selfWorld = selfRender.WorldPosition;
+                var selfScreen = this.Ctx.Render.WorldToScreen(selfWorld, selfWorld.Z);
+                this.mover.MoveToward(selfScreen, leaderScreen, this.Settings.MoveDeadzonePx);
+                this.status = $"following WASD ({distance:F0})";
+                return;
+            }
+
+            // Mouse mode (throttled click-to-move).
             if ((DateTime.Now - this.lastMove).TotalMilliseconds < this.Settings.RepathMs)
             {
                 return;
             }
 
-            var world = leaderRender.WorldPosition;
-            var screen = this.Ctx.Render.WorldToScreen(world, world.Z);
             var window = this.Ctx.Game.WindowArea;
-            if (screen.X < 0 || screen.Y < 0 || screen.X > window.Width || screen.Y > window.Height)
+            if (leaderScreen.X < 0 || leaderScreen.Y < 0 || leaderScreen.X > window.Width || leaderScreen.Y > window.Height)
             {
                 this.status = "leader off-screen";
                 return;
             }
 
-            Input.MoveMouse((int)(window.X + screen.X), (int)(window.Y + screen.Y));
+            Input.MoveMouse((int)(window.X + leaderScreen.X), (int)(window.Y + leaderScreen.Y));
             if (this.Settings.UseLeftClick)
             {
                 Input.Click(Input.MouseButton.Left);
@@ -126,29 +154,78 @@ namespace FollowBot
                 this.SaveSettings();
             }
 
-            if (ImGui.Checkbox("Move with left click", ref this.Settings.UseLeftClick))
+            var mode = this.Settings.Movement;
+            if (Draw.IEnumerableComboBox("Movement mode", new[] { MovementMode.MouseClick, MovementMode.Wasd }, ref mode))
             {
+                this.Settings.Movement = mode;
+                this.mover.Stop();
                 this.SaveSettings();
             }
 
-            if (!this.Settings.UseLeftClick)
+            if (this.Settings.Movement == MovementMode.Wasd)
             {
+                ImGui.TextWrapped("Requires WASD movement enabled & bound in Path of Exile 2. The mouse stays free.");
+                this.KeyBind("Up", ref this.Settings.MoveUpKey, "mu");
                 ImGui.SameLine();
-                ImGui.Text($"Move key: {Input.KeyName(this.Settings.MoveKey)}");
+                this.KeyBind("Left", ref this.Settings.MoveLeftKey, "ml");
+                ImGui.SameLine();
+                this.KeyBind("Down", ref this.Settings.MoveDownKey, "mdn");
+                ImGui.SameLine();
+                this.KeyBind("Right", ref this.Settings.MoveRightKey, "mr");
+                ImGui.SliderInt("Arrival deadzone (px)", ref this.Settings.MoveDeadzonePx, 6, 80);
             }
-
-            if (ImGui.InputInt("Repath delay (ms)", ref this.Settings.RepathMs))
+            else
             {
-                if (this.Settings.RepathMs < 50)
+                if (ImGui.Checkbox("Move with left click", ref this.Settings.UseLeftClick))
                 {
-                    this.Settings.RepathMs = 50;
+                    this.SaveSettings();
                 }
 
-                this.SaveSettings();
+                if (!this.Settings.UseLeftClick)
+                {
+                    ImGui.SameLine();
+                    ImGui.Text($"Move key: {Input.KeyName(this.Settings.MoveKey)}");
+                }
+
+                if (ImGui.InputInt("Repath delay (ms)", ref this.Settings.RepathMs))
+                {
+                    if (this.Settings.RepathMs < 50)
+                    {
+                        this.Settings.RepathMs = 50;
+                    }
+
+                    this.SaveSettings();
+                }
             }
 
             ImGui.Separator();
             ImGui.Text($"Status: {this.status}");
+        }
+
+        private void KeyBind(string label, ref int key, string token)
+        {
+            var capturing = this.captureToken == token;
+            var text = capturing ? "press..." : $"{label}: {Input.KeyName(key)}";
+            if (ImGui.Button($"{text}##{token}", new Vector2(96, 0)))
+            {
+                this.captureToken = capturing ? string.Empty : token;
+            }
+
+            if (!capturing)
+            {
+                return;
+            }
+
+            if (Input.TryCaptureKey(out var vk))
+            {
+                key = vk;
+                this.captureToken = string.Empty;
+                this.SaveSettings();
+            }
+            else if (Input.IsKeyDown(Input.VkEscape))
+            {
+                this.captureToken = string.Empty;
+            }
         }
 
         private IEntity? FindLeader()

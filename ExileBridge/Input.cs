@@ -6,6 +6,7 @@ namespace ExileBridge
 {
     using System;
     using System.Collections.Concurrent;
+    using System.Collections.Generic;
     using System.Runtime.InteropServices;
     using System.Threading;
 
@@ -45,6 +46,8 @@ namespace ExileBridge
         private const uint MouseeventfMiddleup = 0x0040;
 
         private static readonly BlockingCollection<Action> Queue = new(new ConcurrentQueue<Action>());
+        private static readonly object HeldLock = new();
+        private static readonly HashSet<int> HeldKeys = new();
         private static int pending;
 
         static Input()
@@ -55,6 +58,12 @@ namespace ExileBridge
                 Name = "ExileBridge-Input",
             };
             worker.Start();
+
+            // Safety net: if the process exits while a key is still held down
+            // (e.g. a movement key), release everything synchronously so it does
+            // not stay stuck in the game after the overlay is gone.
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => ReleaseAllHeld();
+            AppDomain.CurrentDomain.UnhandledException += (_, _) => ReleaseAllHeld();
         }
 
         /// <summary>Mouse button selector.</summary>
@@ -147,13 +156,74 @@ namespace ExileBridge
             });
         }
 
-        /// <summary>Queues a key-down (no release).</summary>
+        /// <summary>Queues a key-down (no release). Tracks the key as held so it can
+        /// be released on shutdown if no matching key-up is sent.</summary>
         /// <param name="vk">virtual-key code.</param>
-        public static void KeyDown(int vk) => Enqueue(() => keybd_event((byte)vk, 0, KeyeventfKeydown, UIntPtr.Zero));
+        public static void KeyDown(int vk)
+        {
+            lock (HeldLock)
+            {
+                HeldKeys.Add(vk);
+            }
 
-        /// <summary>Queues a key-up.</summary>
+            Enqueue(() => keybd_event((byte)vk, 0, KeyeventfKeydown, UIntPtr.Zero));
+        }
+
+        /// <summary>Queues a key-up and clears the held-key tracking.</summary>
         /// <param name="vk">virtual-key code.</param>
-        public static void KeyUp(int vk) => Enqueue(() => keybd_event((byte)vk, 0, KeyeventfKeyup, UIntPtr.Zero));
+        public static void KeyUp(int vk)
+        {
+            lock (HeldLock)
+            {
+                HeldKeys.Remove(vk);
+            }
+
+            Enqueue(() => keybd_event((byte)vk, 0, KeyeventfKeyup, UIntPtr.Zero));
+        }
+
+        /// <summary>
+        ///     Immediately (synchronously) releases every key currently tracked as
+        ///     held — used as a shutdown / panic safety net so a held movement key is
+        ///     never left stuck in the game.
+        /// </summary>
+        public static void ReleaseAllHeld()
+        {
+            int[] keys;
+            lock (HeldLock)
+            {
+                if (HeldKeys.Count == 0)
+                {
+                    return;
+                }
+
+                keys = new int[HeldKeys.Count];
+                HeldKeys.CopyTo(keys);
+                HeldKeys.Clear();
+            }
+
+            foreach (var vk in keys)
+            {
+                try
+                {
+                    keybd_event((byte)vk, 0, KeyeventfKeyup, UIntPtr.Zero);
+                }
+                catch
+                {
+                    // best-effort release during teardown
+                }
+            }
+        }
+
+        /// <summary>Blocks until the input queue drains or the timeout elapses.</summary>
+        /// <param name="timeoutMs">maximum time to wait.</param>
+        public static void Flush(int timeoutMs = 500)
+        {
+            var spins = Math.Max(1, timeoutMs / 5);
+            for (var i = 0; i < spins && Volatile.Read(ref pending) > 0; i++)
+            {
+                Thread.Sleep(5);
+            }
+        }
 
         /// <summary>Queues a mouse click of the given button.</summary>
         /// <param name="button">which button.</param>

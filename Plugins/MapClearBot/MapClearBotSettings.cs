@@ -6,6 +6,17 @@ namespace MapClearBot
 {
     using ExileBridge;
 
+    /// <summary>How the bot moves the character.</summary>
+    public enum MovementMode
+    {
+        /// <summary>Move by pointing the cursor and clicking (hijacks the mouse).</summary>
+        MouseClick,
+
+        /// <summary>Move with screen-relative WASD keys (mouse stays free). Requires
+        /// WASD movement to be enabled and bound in Path of Exile 2.</summary>
+        Wasd,
+    }
+
     /// <summary>Persisted MapClearBot settings.</summary>
     public sealed class MapClearBotSettings : IPluginSettings
     {
@@ -14,6 +25,27 @@ namespace MapClearBot
 
         /// <summary>Virtual-key code that toggles the bot on/off.</summary>
         public int ToggleKey = 115; // F4
+
+        /// <summary>How the character is moved.</summary>
+        public MovementMode Movement = MovementMode.MouseClick;
+
+        /// <summary>WASD: screen-up key.</summary>
+        public int MoveUpKey = 87; // W
+
+        /// <summary>WASD: screen-down key.</summary>
+        public int MoveDownKey = 83; // S
+
+        /// <summary>WASD: screen-left key.</summary>
+        public int MoveLeftKey = 65; // A
+
+        /// <summary>WASD: screen-right key.</summary>
+        public int MoveRightKey = 68; // D
+
+        /// <summary>WASD arrival radius in pixels (stop when this close on screen).</summary>
+        public int MoveDeadzonePx = 22;
+
+        /// <summary>Point the cursor at the target before attacking (needed for aimed skills).</summary>
+        public bool AimMouseOnAttack = true;
 
         /// <summary>Attack with a left click instead of a key.</summary>
         public bool AttackWithLeftClick;

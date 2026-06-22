@@ -23,6 +23,10 @@ namespace MapClearBot
     {
         private readonly Pathfinder pf = new();
         private readonly HashSet<(int, int)> explored = new();
+        private readonly MovementController mover = new();
+        private Vector2 playerScreenRel;
+        private float playerHeight;
+        private string captureToken = string.Empty;
 
         private bool wasToggleDown;
         private DateTime lastAction = DateTime.MinValue;
@@ -55,6 +59,7 @@ namespace MapClearBot
         /// <inheritdoc />
         public override void OnDisable()
         {
+            this.mover.Stop();
             this.areaToken?.Dispose();
             this.areaToken = null;
         }
@@ -69,15 +74,31 @@ namespace MapClearBot
         /// <inheritdoc />
         public override void DrawUI()
         {
+            try
+            {
+                this.Step();
+            }
+            catch
+            {
+                // Never leave a movement key held if a frame throws.
+                this.mover.Stop();
+                throw;
+            }
+        }
+
+        private void Step()
+        {
             this.HandleToggle();
 
             if (!this.Settings.Enabled || !this.Ctx.Game.IsInGame || !this.Ctx.Game.IsForeground)
             {
+                this.mover.Stop();
                 return;
             }
 
             if (this.Ctx.Ui.IsAnyLargePanelOpen)
             {
+                this.mover.Stop();
                 return;
             }
 
@@ -85,12 +106,18 @@ namespace MapClearBot
             var self = ig.Player;
             if (self == null || !self.TryGetComponent<IRender>(out var selfRender))
             {
+                this.mover.Stop();
                 return;
             }
 
             var terrain = ig.Terrain;
             this.pf.Bind(terrain);
             this.conv = terrain.WorldToGridConvertor <= 0 ? 1f : terrain.WorldToGridConvertor;
+            this.mover.Configure(this.Settings.MoveUpKey, this.Settings.MoveDownKey, this.Settings.MoveLeftKey, this.Settings.MoveRightKey);
+
+            var pw0 = selfRender.WorldPosition;
+            this.playerHeight = pw0.Z;
+            this.playerScreenRel = this.Ctx.Render.WorldToScreen(pw0, pw0.Z);
 
             var playerGrid = selfRender.GridPosition;
             var pg = ((int)playerGrid.X, (int)playerGrid.Y);
@@ -103,8 +130,11 @@ namespace MapClearBot
                 this.DrawPath();
             }
 
-            // Throttle the action cadence (mouse/keys), not the bookkeeping above.
-            if ((DateTime.Now - this.lastAction).TotalMilliseconds < this.Settings.ActionDelayMs)
+            // Discrete actions (attacks, clicks, mouse-move steps) are rate-limited.
+            // WASD movement is a held-key state that must update EVERY frame, so it is
+            // not gated here — only mouse mode (click-to-move) returns early.
+            var actionReady = (DateTime.Now - this.lastAction).TotalMilliseconds >= this.Settings.ActionDelayMs;
+            if (this.Settings.Movement == MovementMode.MouseClick && !actionReady)
             {
                 return;
             }
@@ -121,10 +151,23 @@ namespace MapClearBot
             var monster = this.BestMonster(awake, playerGrid, pg);
             if (monster != null)
             {
-                this.AimAt(monster);
-                this.Attack();
-                this.path = null; // re-path after the fight
-                this.Act("combat");
+                this.mover.Stop(); // stand still to attack (released every frame)
+                if (actionReady)
+                {
+                    if (this.Settings.AimMouseOnAttack || this.Settings.Movement == MovementMode.MouseClick)
+                    {
+                        this.AimAt(monster);
+                    }
+
+                    this.Attack();
+                    this.path = null; // re-path after the fight
+                    this.Act("combat");
+                }
+                else
+                {
+                    this.state = "combat";
+                }
+
                 return;
             }
 
@@ -134,9 +177,18 @@ namespace MapClearBot
                 var item = this.NearestItem(awake, playerGrid);
                 if (item != null)
                 {
-                    this.AimAt(item);
-                    Input.Click(Input.MouseButton.Left);
-                    this.Act("loot");
+                    this.mover.Stop();
+                    if (actionReady)
+                    {
+                        this.AimAt(item); // pickup needs a click on the item
+                        Input.Click(Input.MouseButton.Left);
+                        this.Act("loot");
+                    }
+                    else
+                    {
+                        this.state = "loot";
+                    }
+
                     return;
                 }
             }
@@ -165,11 +217,36 @@ namespace MapClearBot
                 ImGui.Text($"Attack key: {Input.KeyName(this.Settings.AttackKey)}");
             }
 
-            ImGui.Checkbox("Move with left click", ref this.Settings.MoveWithLeftClick);
-            if (!this.Settings.MoveWithLeftClick)
+            var mode = this.Settings.Movement;
+            if (Draw.IEnumerableComboBox("Movement mode", new[] { MovementMode.MouseClick, MovementMode.Wasd }, ref mode))
             {
+                this.Settings.Movement = mode;
+                this.mover.Stop();
+                this.SaveSettings();
+            }
+
+            if (this.Settings.Movement == MovementMode.Wasd)
+            {
+                ImGui.TextWrapped("Requires WASD movement enabled & bound in Path of Exile 2. The mouse stays free.");
+                this.KeyBind("Up", ref this.Settings.MoveUpKey, "mu");
                 ImGui.SameLine();
-                ImGui.Text($"Move key: {Input.KeyName(this.Settings.MoveKey)}");
+                this.KeyBind("Left", ref this.Settings.MoveLeftKey, "ml");
+                ImGui.SameLine();
+                this.KeyBind("Down", ref this.Settings.MoveDownKey, "mdn");
+                ImGui.SameLine();
+                this.KeyBind("Right", ref this.Settings.MoveRightKey, "mr");
+                ImGui.SliderInt("Arrival deadzone (px)", ref this.Settings.MoveDeadzonePx, 6, 80);
+                ImGui.Checkbox("Aim mouse on attack", ref this.Settings.AimMouseOnAttack);
+                Draw.ToolTip("Off = never touch the mouse (melee/self-cast). On = point at the target for aimed skills.");
+            }
+            else
+            {
+                ImGui.Checkbox("Move with left click", ref this.Settings.MoveWithLeftClick);
+                if (!this.Settings.MoveWithLeftClick)
+                {
+                    ImGui.SameLine();
+                    ImGui.Text($"Move key: {Input.KeyName(this.Settings.MoveKey)}");
+                }
             }
 
             ImGui.SliderFloat("Combat range", ref this.Settings.CombatRange, 10f, 150f);
@@ -248,13 +325,10 @@ namespace MapClearBot
 
             away = Vector2.Normalize(away) * (this.Settings.CombatRange * this.conv);
             var target = new Vector3(pw.X + away.X, pw.Y + away.Y, pw.Z);
-            if (this.PointAt(target))
-            {
-                this.Move();
-            }
+            this.Travel(target);
 
             this.path = null;
-            this.Act("flee");
+            this.Moved("flee");
             return true;
         }
 
@@ -370,6 +444,7 @@ namespace MapClearBot
                 }
                 else
                 {
+                    this.mover.Stop();
                     this.state = "cleared";
                     return;
                 }
@@ -378,7 +453,11 @@ namespace MapClearBot
             if (this.path != null && this.path.Count >= 2)
             {
                 this.MoveAlongPath(pg);
-                this.Act("explore");
+                this.Moved("explore");
+            }
+            else
+            {
+                this.mover.Stop();
             }
         }
 
@@ -428,15 +507,39 @@ namespace MapClearBot
         // ====================================================================
         private void MoveAlongPath((int X, int Y) pg)
         {
-            if (this.path == null)
+            if (this.path == null || this.path.Count == 0)
             {
                 return;
             }
 
-            (int X, int Y)? chosen = null;
-            (int X, int Y)? firstOnScreen = null;
             var lookahead = this.Settings.LookaheadTiles;
 
+            if (this.Settings.Movement == MovementMode.Wasd)
+            {
+                // Direction only: the first path point ~lookahead tiles ahead
+                // (works even when that point is off-screen).
+                var wp = this.path[this.path.Count - 1];
+                foreach (var pt in this.path)
+                {
+                    if (Math.Abs(pt.X - pg.X) + Math.Abs(pt.Y - pg.Y) >= lookahead)
+                    {
+                        wp = pt;
+                        break;
+                    }
+                }
+
+                // Project the waypoint at the player's height so the W/S (vertical)
+                // component matches playerScreenRel (also projected at playerHeight),
+                // avoiding a height-induced direction bias on sloped terrain.
+                var world = new Vector3(wp.X * this.conv, wp.Y * this.conv, this.playerHeight);
+                var screen = this.Ctx.Render.WorldToScreen(world, this.playerHeight);
+                this.mover.MoveToward(this.playerScreenRel, screen, this.Settings.MoveDeadzonePx);
+                return;
+            }
+
+            // Mouse mode: click the farthest on-screen point within lookahead.
+            (int X, int Y)? chosen = null;
+            (int X, int Y)? firstOnScreen = null;
             foreach (var pt in this.path)
             {
                 var d = Math.Abs(pt.X - pg.X) + Math.Abs(pt.Y - pg.Y);
@@ -458,11 +561,31 @@ namespace MapClearBot
                 return;
             }
 
-            if (this.GridToScreen(target.Value, out var screen))
+            if (this.GridToScreen(target.Value, out var abs))
             {
-                Input.MoveMouse((int)screen.X, (int)screen.Y);
+                Input.MoveMouse((int)abs.X, (int)abs.Y);
                 this.Move();
             }
+        }
+
+        // Moves toward a single world point, dispatching on the movement mode.
+        private void Travel(Vector3 world)
+        {
+            var screen = this.Ctx.Render.WorldToScreen(world, world.Z);
+            if (this.Settings.Movement == MovementMode.Wasd)
+            {
+                this.mover.MoveToward(this.playerScreenRel, screen, this.Settings.MoveDeadzonePx);
+                return;
+            }
+
+            var window = this.Ctx.Game.WindowArea;
+            if (screen.X < 0 || screen.Y < 0 || screen.X > window.Width || screen.Y > window.Height)
+            {
+                return;
+            }
+
+            Input.MoveMouse((int)(window.X + screen.X), (int)(window.Y + screen.Y));
+            this.Move();
         }
 
         private void Move()
@@ -532,6 +655,7 @@ namespace MapClearBot
                 if (!this.Settings.Enabled)
                 {
                     this.path = null;
+                    this.mover.Stop();
                 }
             }
 
@@ -542,6 +666,45 @@ namespace MapClearBot
         {
             this.lastAction = DateTime.Now;
             this.state = newState;
+        }
+
+        // Movement bookkeeping. Only mouse-mode movement is a discrete (click)
+        // action that should reset the throttle; WASD movement is a held-key state
+        // updated every frame, so it must NOT keep resetting lastAction (that would
+        // starve the discrete combat/loot actions).
+        private void Moved(string newState)
+        {
+            this.state = newState;
+            if (this.Settings.Movement == MovementMode.MouseClick)
+            {
+                this.lastAction = DateTime.Now;
+            }
+        }
+
+        private void KeyBind(string label, ref int key, string token)
+        {
+            var capturing = this.captureToken == token;
+            var text = capturing ? "press..." : $"{label}: {Input.KeyName(key)}";
+            if (ImGui.Button($"{text}##{token}", new Vector2(96, 0)))
+            {
+                this.captureToken = capturing ? string.Empty : token;
+            }
+
+            if (!capturing)
+            {
+                return;
+            }
+
+            if (Input.TryCaptureKey(out var vk))
+            {
+                key = vk;
+                this.captureToken = string.Empty;
+                this.SaveSettings();
+            }
+            else if (Input.IsKeyDown(Input.VkEscape))
+            {
+                this.captureToken = string.Empty;
+            }
         }
 
         private void MarkExplored((int X, int Y) pg)
