@@ -38,6 +38,7 @@ namespace MapClearBot
         private List<(int X, int Y)>? path;
         private (int X, int Y) pathGoal;
         private DateTime pathAt = DateTime.MinValue;
+        private bool offPath;
         private float conv = 1f;
 
         private IDisposable? areaToken;
@@ -418,8 +419,14 @@ namespace MapClearBot
                 this.lastProgressTime = now;
             }
 
-            var needPath = this.path == null || this.path.Count < 2 ||
-                           (now - this.pathAt).TotalMilliseconds > this.Settings.PathRecomputeMs;
+            // Recompute only when needed (NOT on a fixed timer) so movement stays
+            // smooth: when there is no path, when we've reached the frontier, when
+            // we've strayed off it (no LoS to any point), when stuck, or as a rare
+            // safety refresh. This avoids the periodic "snap" that caused stutter.
+            var reachedGoal = this.path != null &&
+                Math.Abs(pg.X - this.pathGoal.X) + Math.Abs(pg.Y - this.pathGoal.Y) <= 4;
+            var safety = (now - this.pathAt).TotalMilliseconds > Math.Max(1500, this.Settings.PathRecomputeMs);
+            var needPath = this.path == null || this.path.Count < 2 || reachedGoal || this.offPath || safety;
 
             if (needPath)
             {
@@ -428,9 +435,10 @@ namespace MapClearBot
                     var p = this.pf.FindPath(pg, frontier, this.Settings.MaxPathNodes);
                     if (p != null && p.Count >= 2)
                     {
-                        this.path = p;
+                        this.path = this.pf.SimplifyLos(p);
                         this.pathGoal = frontier;
                         this.pathAt = now;
+                        this.offPath = false;
                     }
                     else
                     {
@@ -440,7 +448,8 @@ namespace MapClearBot
                 }
                 else if (this.Settings.GoToTransitionWhenCleared && this.TryPathToTransition(pg, now))
                 {
-                    // path set to nearest transition tile
+                    this.path = this.pf.SimplifyLos(this.path);
+                    this.offPath = false;
                 }
                 else
                 {
@@ -450,7 +459,7 @@ namespace MapClearBot
                 }
             }
 
-            if (this.path != null && this.path.Count >= 2)
+            if (this.path != null && this.path.Count >= 1)
             {
                 this.MoveAlongPath(pg);
                 this.Moved("explore");
@@ -512,58 +521,53 @@ namespace MapClearBot
                 return;
             }
 
-            var lookahead = this.Settings.LookaheadTiles;
-
-            if (this.Settings.Movement == MovementMode.Wasd)
+            // Funnel: head toward the FARTHEST path point we still have line of
+            // sight to. This keeps a steady straight heading and only turns at
+            // corners — the key to smooth movement (no staircase, no wall-ramming).
+            (int X, int Y)? target = null;
+            var targetAbs = Vector2.Zero;
+            for (var i = this.path.Count - 1; i >= 0; i--)
             {
-                // Direction only: the first path point ~lookahead tiles ahead
-                // (works even when that point is off-screen).
-                var wp = this.path[this.path.Count - 1];
-                foreach (var pt in this.path)
-                {
-                    if (Math.Abs(pt.X - pg.X) + Math.Abs(pt.Y - pg.Y) >= lookahead)
-                    {
-                        wp = pt;
-                        break;
-                    }
-                }
-
-                // Project the waypoint at the player's height so the W/S (vertical)
-                // component matches playerScreenRel (also projected at playerHeight),
-                // avoiding a height-induced direction bias on sloped terrain.
-                var world = new Vector3(wp.X * this.conv, wp.Y * this.conv, this.playerHeight);
-                var screen = this.Ctx.Render.WorldToScreen(world, this.playerHeight);
-                this.mover.MoveToward(this.playerScreenRel, screen, this.Settings.MoveDeadzonePx);
-                return;
-            }
-
-            // Mouse mode: click the farthest on-screen point within lookahead.
-            (int X, int Y)? chosen = null;
-            (int X, int Y)? firstOnScreen = null;
-            foreach (var pt in this.path)
-            {
-                var d = Math.Abs(pt.X - pg.X) + Math.Abs(pt.Y - pg.Y);
-                if (!this.GridToScreen(pt, out _))
+                var pt = this.path[i];
+                if (!this.pf.HasLineOfSight(pg.X, pg.Y, pt.X, pt.Y))
                 {
                     continue;
                 }
 
-                firstOnScreen ??= pt;
-                if (d <= lookahead)
+                if (this.Settings.Movement == MovementMode.Wasd)
                 {
-                    chosen = pt; // keep the farthest within lookahead
+                    target = pt;
+                    break;
+                }
+
+                if (this.GridToScreen(pt, out targetAbs))
+                {
+                    target = pt; // farthest visible & on-screen for click-to-move
+                    break;
                 }
             }
 
-            var target = chosen ?? firstOnScreen;
             if (target == null)
             {
+                // Strayed off the path (nothing visible): trigger a re-path.
+                this.offPath = true;
                 return;
             }
 
-            if (this.GridToScreen(target.Value, out var abs))
+            this.offPath = false;
+
+            if (this.Settings.Movement == MovementMode.Wasd)
             {
-                Input.MoveMouse((int)abs.X, (int)abs.Y);
+                // Project the waypoint at the player's height so the W/S (vertical)
+                // component matches playerScreenRel, avoiding a height-induced
+                // direction bias on sloped terrain.
+                var world = new Vector3(target.Value.X * this.conv, target.Value.Y * this.conv, this.playerHeight);
+                var screen = this.Ctx.Render.WorldToScreen(world, this.playerHeight);
+                this.mover.MoveToward(this.playerScreenRel, screen, this.Settings.MoveDeadzonePx);
+            }
+            else
+            {
+                Input.MoveMouse((int)targetAbs.X, (int)targetAbs.Y);
                 this.Move();
             }
         }

@@ -272,6 +272,36 @@ namespace MapClearBot
             return false;
         }
 
+        /// <summary>
+        ///     Simplifies a cell path by string-pulling: keeps only the corner cells
+        ///     where line of sight breaks, so long straight runs collapse to a single
+        ///     segment. This removes the grid staircase and gives smooth, stable
+        ///     movement headings.
+        /// </summary>
+        /// <param name="path">the raw cell path.</param>
+        /// <returns>the simplified path (corners only).</returns>
+        public List<(int X, int Y)> SimplifyLos(List<(int X, int Y)> path)
+        {
+            if (path == null || path.Count <= 2)
+            {
+                return path;
+            }
+
+            var result = new List<(int X, int Y)> { path[0] };
+            var anchor = 0;
+            for (var i = 2; i < path.Count; i++)
+            {
+                if (!this.HasLineOfSight(path[anchor].X, path[anchor].Y, path[i].X, path[i].Y))
+                {
+                    result.Add(path[i - 1]);
+                    anchor = i - 1;
+                }
+            }
+
+            result.Add(path[path.Count - 1]);
+            return result;
+        }
+
         private bool TryNearestWalkable(int x, int y, int radius, out (int X, int Y) result)
         {
             for (var r = 0; r <= radius; r++)

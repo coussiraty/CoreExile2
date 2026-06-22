@@ -70,32 +70,36 @@ namespace ExileBridge
                 return;
             }
 
-            // Include an axis when its component is a meaningful share of the
-            // vector; ~0.38 splits the circle into 8 even sectors (cardinals span
-            // +/-22.5 degrees, diagonals press both keys).
-            var threshold = 0.38f * dist;
+            // Decide which axes to press, with HYSTERESIS to stop key chatter near
+            // sector boundaries: an axis needs a larger share of the vector to
+            // ENGAGE (addT ~ 27 deg) than to stay engaged (keepT ~ 15 deg). The
+            // dominant axis always exceeds addT (max component >= 0.707*dist), so
+            // there is always at least one key.
+            var addT = 0.46f * dist;
+            var keepT = 0.26f * dist;
             var desired = new HashSet<int>();
-            if (dx > threshold)
+
+            if (dx > 0 && dx > (this.held.Contains(this.right) ? keepT : addT))
             {
                 desired.Add(this.right);
             }
-            else if (dx < -threshold)
+            else if (dx < 0 && -dx > (this.held.Contains(this.left) ? keepT : addT))
             {
                 desired.Add(this.left);
             }
 
-            if (dy > threshold)
+            if (dy > 0 && dy > (this.held.Contains(this.down) ? keepT : addT))
             {
                 desired.Add(this.down);
             }
-            else if (dy < -threshold)
+            else if (dy < 0 && -dy > (this.held.Contains(this.up) ? keepT : addT))
             {
                 desired.Add(this.up);
             }
 
             if (desired.Count == 0)
             {
-                // Exactly between sectors: fall back to the dominant axis.
+                // Safety: between sectors, fall back to the dominant axis.
                 if (MathF.Abs(dx) >= MathF.Abs(dy))
                 {
                     desired.Add(dx >= 0 ? this.right : this.left);
