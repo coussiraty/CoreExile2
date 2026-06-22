@@ -405,6 +405,8 @@ namespace MapClearBot
             ImGui.Checkbox("Draw path", ref this.Settings.ShowPath);
             ImGui.SameLine();
             ImGui.Checkbox("Show explored (blue)", ref this.Settings.ShowExplored);
+            ImGui.SliderFloat("Reveal radius", ref this.Settings.RevealRadius, 15f, 120f);
+            Draw.ToolTip("How far around the player counts as explored (matches the game's minimap reveal).");
 
             if (ImGui.Button("Save"))
             {
