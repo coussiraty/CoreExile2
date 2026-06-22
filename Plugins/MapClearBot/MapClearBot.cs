@@ -42,6 +42,9 @@ namespace MapClearBot
 
         private (int X, int Y) lastProgressPos;
         private DateTime lastProgressTime = DateTime.MinValue;
+        private DateTime lastCombatProgress = DateTime.MinValue;
+        private DateTime combatBlackoutUntil = DateTime.MinValue;
+        private int lastInRangeCount;
 
         private List<(int X, int Y)>? path;
         private (int X, int Y) pathGoal;
@@ -234,11 +237,36 @@ namespace MapClearBot
                     }
                 }
 
+                // Split in-range valid monsters by STRICT targetable (= attackable now)
+                // vs not (likely dormant/burrowed) to diagnose the "stuck attacking
+                // sleeping monsters" case.
+                int atkInRange = 0, dormInRange = 0;
+                foreach (var e in awake)
+                {
+                    if (!IsValidMonster(e) || !e.TryGetComponent<IRender>(out var rr))
+                    {
+                        continue;
+                    }
+
+                    if (Vector2.Distance(playerGrid, rr.GridPosition) > this.Settings.CombatRange)
+                    {
+                        continue;
+                    }
+
+                    if (e.TryGetComponent<ITargetable>(out var tt) && tt.IsTargetable)
+                    {
+                        atkInRange++;
+                    }
+                    else
+                    {
+                        dormInRange++;
+                    }
+                }
+
                 var lifePct = self.TryGetComponent<ILife>(out var lf) ? lf.Health.CurrentInPercent : -1;
                 this.combatDebug =
-                    $"map:{this.MapPercent}%  awake:{total} mon:{monsters} valid:{valid}(notTgt:{notTgt} dead:{dead} fr/use:{frUse}) " +
-                    $"nearest:{(nd < 0 ? "none" : nd.ToString("F0"))} range:{this.Settings.CombatRange:F0} " +
-                    $"state:{this.state} life%:{lifePct} q:{Input.Pending}{(types.Length > 0 ? " | types:" + types : string.Empty)}";
+                    $"map:{this.MapPercent}%({this.exploredWalkable}/{this.totalWalkable}) mon:{monsters} valid:{valid} atk:{atkInRange} dorm:{dormInRange} " +
+                    $"state:{this.state} life%:{lifePct} pg:{(int)playerGrid.X},{(int)playerGrid.Y} goal:{this.pathGoal.X},{this.pathGoal.Y} pc:{this.path?.Count ?? 0} mv:{this.mover.IsMoving}{(types.Length > 0 ? " types:" + types : string.Empty)}";
                 var dl = ImGui.GetBackgroundDrawList();
                 dl.AddText(new Vector2(20, 140), Draw.Color(new Vector4(1f, 1f, 0f, 1f)), this.combatDebug);
                 dl.AddText(new Vector2(20, 158), Draw.Color(new Vector4(0.3f, 1f, 0.4f, 1f)), $"Map cleared: {this.MapPercent}%");
@@ -271,32 +299,57 @@ namespace MapClearBot
                 return;
             }
 
-            // 2) Combat. Attack the best in-range monster: prefer one with line of
-            //    sight, but otherwise just hit the NEAREST one so bosses/packs that
-            //    sit on awkward (non-walkable) cells still get attacked. Standing on
-            //    any in-range monster also prevents combat<->walk flicker.
-            var target = this.BestMonster(awake, playerGrid, pg)
+            // 2) Combat. Prefer a monster that is attackable NOW (strict targetable);
+            //    fall back to the nearest in-range monster otherwise. Dormant/burrowed
+            //    monsters report not-attackable and never die from standing on them, so
+            //    a no-kill timeout blacks out combat and hands control to explore (which
+            //    walks the bot away / past them) instead of getting stuck forever.
+            var now = DateTime.Now;
+            var target = this.NearestAttackable(awake, playerGrid, this.Settings.CombatRange)
                          ?? this.NearestMonsterInRange(awake, playerGrid, this.Settings.CombatRange);
-            if (target != null)
+            if (target != null && now >= this.combatBlackoutUntil)
             {
-                this.mover.Stop();
-                if (actionReady)
+                var inRange = this.CountValidInRange(awake, playerGrid, this.Settings.CombatRange);
+                if (inRange < this.lastInRangeCount || this.lastCombatProgress == DateTime.MinValue)
                 {
-                    if (this.Settings.AimMouseOnAttack || this.Settings.Movement == MovementMode.MouseClick)
-                    {
-                        this.AimAt(target);
-                    }
+                    this.lastCombatProgress = now; // a monster died/left => making progress
+                }
 
-                    this.Attack();
-                    this.path = null; // re-path after the fight
-                    this.Act("combat");
+                this.lastInRangeCount = inRange;
+
+                if ((now - this.lastCombatProgress).TotalSeconds > Math.Max(2.5, this.Settings.StuckSeconds))
+                {
+                    // No kills for a while => these are dormant/unkillable. Back off and
+                    // explore (moves the bot); combat re-engages once they activate.
+                    this.combatBlackoutUntil = now.AddSeconds(4);
+                    this.lastCombatProgress = now;
                 }
                 else
                 {
-                    this.state = "combat";
-                }
+                    this.mover.Stop();
+                    if (actionReady)
+                    {
+                        if (this.Settings.AimMouseOnAttack || this.Settings.Movement == MovementMode.MouseClick)
+                        {
+                            this.AimAt(target);
+                        }
 
-                return;
+                        this.Attack();
+                        this.path = null; // re-path after the fight
+                        this.Act("combat");
+                    }
+                    else
+                    {
+                        this.state = "combat";
+                    }
+
+                    return;
+                }
+            }
+            else if (target == null)
+            {
+                this.lastInRangeCount = 0;
+                this.lastCombatProgress = DateTime.MinValue;
             }
 
             // 3) Loot ground items and open chests/strongboxes: walk close, then click.
@@ -530,6 +583,50 @@ namespace MapClearBot
             }
 
             return best;
+        }
+
+        // Nearest monster in range that is attackable NOW (strict targetable) — i.e.
+        // not dormant/burrowed.
+        private IEntity? NearestAttackable(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid, float range)
+        {
+            IEntity? best = null;
+            var bestDist = float.MaxValue;
+            foreach (var e in awake)
+            {
+                if (!IsValidMonster(e) || !e.TryGetComponent<IRender>(out var r))
+                {
+                    continue;
+                }
+
+                if (!e.TryGetComponent<ITargetable>(out var t) || !t.IsTargetable)
+                {
+                    continue;
+                }
+
+                var d = Vector2.Distance(playerGrid, r.GridPosition);
+                if (d <= range && d < bestDist)
+                {
+                    bestDist = d;
+                    best = e;
+                }
+            }
+
+            return best;
+        }
+
+        private int CountValidInRange(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid, float range)
+        {
+            var n = 0;
+            foreach (var e in awake)
+            {
+                if (IsValidMonster(e) && e.TryGetComponent<IRender>(out var r) &&
+                    Vector2.Distance(playerGrid, r.GridPosition) <= range)
+                {
+                    n++;
+                }
+            }
+
+            return n;
         }
 
         // Nearest lootable item or openable chest within loot range.
@@ -818,15 +915,32 @@ namespace MapClearBot
         // Farthest path point still in line of sight (smooth steering).
         private (int X, int Y)? FunnelWaypoint((int X, int Y) pg)
         {
+            // Farthest path point in line of sight that is at least a few tiles away
+            // (never the player's own cell, which would land in the deadzone -> no move).
             for (var i = this.path!.Count - 1; i >= 0; i--)
             {
                 var pt = this.path[i];
+                if (Math.Abs(pt.X - pg.X) + Math.Abs(pt.Y - pg.Y) < 3)
+                {
+                    continue;
+                }
+
                 if (!this.pf.HasLineOfSight(pg.X, pg.Y, pt.X, pt.Y))
                 {
                     continue;
                 }
 
                 if (this.Settings.Movement == MovementMode.Wasd || this.GridToScreen(pt, out _))
+                {
+                    return pt;
+                }
+            }
+
+            // Fallback: nearest point a few tiles ahead even without LoS, so we keep
+            // moving along the path instead of stalling.
+            foreach (var pt in this.path)
+            {
+                if (Math.Abs(pt.X - pg.X) + Math.Abs(pt.Y - pg.Y) >= 3)
                 {
                     return pt;
                 }
