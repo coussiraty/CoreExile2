@@ -75,6 +75,18 @@ namespace MapClearBot
         /// <summary>Only loot items whose metadata path contains this text (empty = all).</summary>
         public string LootFilter = string.Empty;
 
+        /// <summary>Whether to open regular chests.</summary>
+        public bool OpenChests = true;
+
+        /// <summary>Whether to open strongboxes.</summary>
+        public bool OpenStrongboxes;
+
+        /// <summary>Distance (grid units) at which the bot clicks to loot/open instead of walking closer.</summary>
+        public float InteractDistance = 18f;
+
+        /// <summary>Draw the explored area as a blue overlay on the ground.</summary>
+        public bool ShowExplored = true;
+
         /// <summary>Require line of sight to a monster before attacking.</summary>
         public bool UseLineOfSight = true;
 

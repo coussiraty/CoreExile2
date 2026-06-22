@@ -151,6 +151,11 @@ namespace MapClearBot
             this.MarkExplored(pg);
             this.UpdateProgress(playerGrid);
 
+            if (this.Settings.ShowExplored)
+            {
+                this.DrawExploredOverlay(pg);
+            }
+
             if (this.Settings.ShowPath)
             {
                 this.DrawPath();
@@ -278,26 +283,32 @@ namespace MapClearBot
                 return;
             }
 
-            // 3) Loot.
-            if (this.Settings.PickItems)
+            // 3) Loot ground items and open chests/strongboxes: walk close, then click.
+            var collectible = this.NearestCollectible(awake, playerGrid);
+            if (collectible != null && collectible.TryGetComponent<IRender>(out var cr))
             {
-                var item = this.NearestItem(awake, playerGrid);
-                if (item != null)
+                var dist = Vector2.Distance(playerGrid, cr.GridPosition);
+                if (dist > this.Settings.InteractDistance)
+                {
+                    this.Travel(cr.WorldPosition); // approach (needed for WASD)
+                    this.Moved("approach");
+                }
+                else
                 {
                     this.mover.Stop();
                     if (actionReady)
                     {
-                        this.AimAt(item); // pickup needs a click on the item
+                        this.AimAt(collectible);
                         Input.Click(Input.MouseButton.Left);
-                        this.Act("loot");
+                        this.Act(collectible.Type == EntityType.Chest ? "chest" : "loot");
                     }
                     else
                     {
-                        this.state = "loot";
+                        this.state = collectible.Type == EntityType.Chest ? "chest" : "loot";
                     }
-
-                    return;
                 }
+
+                return;
             }
 
             // 4) Explore (and 5) transition when cleared).
@@ -362,6 +373,10 @@ namespace MapClearBot
             ImGui.Checkbox("Pick items", ref this.Settings.PickItems);
             ImGui.SetNextItemWidth(220);
             ImGui.InputText("Loot filter (path contains)", ref this.Settings.LootFilter, 64);
+            ImGui.Checkbox("Open chests", ref this.Settings.OpenChests);
+            ImGui.SameLine();
+            ImGui.Checkbox("Open strongboxes", ref this.Settings.OpenStrongboxes);
+            ImGui.SliderFloat("Interact distance", ref this.Settings.InteractDistance, 6f, 60f);
             ImGui.Checkbox("Use line of sight", ref this.Settings.UseLineOfSight);
             ImGui.SliderInt("Flee life % (0 = off)", ref this.Settings.FleeLifePercent, 0, 90);
             ImGui.Separator();
@@ -373,6 +388,8 @@ namespace MapClearBot
             ImGui.SliderInt("Max path nodes", ref this.Settings.MaxPathNodes, 2000, 80000);
             ImGui.Checkbox("Go to transition when cleared", ref this.Settings.GoToTransitionWhenCleared);
             ImGui.Checkbox("Draw path", ref this.Settings.ShowPath);
+            ImGui.SameLine();
+            ImGui.Checkbox("Show explored (blue)", ref this.Settings.ShowExplored);
 
             if (ImGui.Button("Save"))
             {
@@ -497,25 +514,38 @@ namespace MapClearBot
             return best;
         }
 
-        private IEntity? NearestItem(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid)
+        // Nearest lootable item or openable chest within loot range.
+        private IEntity? NearestCollectible(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid)
         {
             IEntity? best = null;
             var bestDist = float.MaxValue;
-            var filter = this.Settings.LootFilter;
             foreach (var e in awake)
             {
-                if (!e.IsValid || e.Type != EntityType.Item)
+                if (!e.IsValid)
                 {
                     continue;
                 }
 
-                if (e.TryGetComponent<ITargetable>(out var t) && !t.IsTargetable)
+                bool ok;
+                if (e.Type == EntityType.Item)
+                {
+                    ok = this.Settings.PickItems && this.PassesLootFilter(e);
+                }
+                else if (e.Type == EntityType.Chest)
+                {
+                    ok = this.IsValidChest(e);
+                }
+                else
                 {
                     continue;
                 }
 
-                if (!string.IsNullOrWhiteSpace(filter) &&
-                    (e.Path == null || e.Path.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0))
+                if (!ok)
+                {
+                    continue;
+                }
+
+                if (e.TryGetComponent<ITargetable>(out var t) && t.IsHidden)
                 {
                     continue;
                 }
@@ -534,6 +564,23 @@ namespace MapClearBot
             }
 
             return best;
+        }
+
+        private bool PassesLootFilter(IEntity e)
+        {
+            var f = this.Settings.LootFilter;
+            return string.IsNullOrWhiteSpace(f) ||
+                   (e.Path != null && e.Path.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private bool IsValidChest(IEntity e)
+        {
+            if (!e.TryGetComponent<IChest>(out var chest) || chest.IsOpened)
+            {
+                return false;
+            }
+
+            return chest.IsStrongbox ? this.Settings.OpenStrongboxes : this.Settings.OpenChests;
         }
 
         private void ExploreStep((int X, int Y) pg)
@@ -992,6 +1039,44 @@ namespace MapClearBot
         private int MapPercent => this.totalWalkable > 0
             ? (int)(100L * this.exploredWalkable / this.totalWalkable)
             : 0;
+
+        // Draws explored walkable cells near the player as translucent blue ground
+        // quads (a fog-of-war style overlay). Bounded to a window so it stays cheap.
+        private void DrawExploredOverlay((int X, int Y) pg)
+        {
+            var size = Math.Max(1, this.Settings.ExploreCellSize);
+            var pcx = pg.X / size;
+            var pcy = pg.Y / size;
+            const int win = 16;
+            var dl = ImGui.GetBackgroundDrawList();
+            var col = Draw.Color(new Vector4(0.2f, 0.5f, 1f, 0.16f));
+
+            for (var cy = pcy - win; cy <= pcy + win; cy++)
+            {
+                for (var cx = pcx - win; cx <= pcx + win; cx++)
+                {
+                    if (!this.explored.Contains((cx, cy)))
+                    {
+                        continue;
+                    }
+
+                    if (this.walkableCoarse != null && !this.walkableCoarse.Contains((cx, cy)))
+                    {
+                        continue;
+                    }
+
+                    var x0 = cx * size * this.conv;
+                    var y0 = cy * size * this.conv;
+                    var x1 = (cx + 1) * size * this.conv;
+                    var y1 = (cy + 1) * size * this.conv;
+                    var a = this.Ctx.Render.WorldToScreen(new Vector3(x0, y0, this.playerHeight), this.playerHeight);
+                    var b = this.Ctx.Render.WorldToScreen(new Vector3(x1, y0, this.playerHeight), this.playerHeight);
+                    var c = this.Ctx.Render.WorldToScreen(new Vector3(x1, y1, this.playerHeight), this.playerHeight);
+                    var d = this.Ctx.Render.WorldToScreen(new Vector3(x0, y1, this.playerHeight), this.playerHeight);
+                    dl.AddQuadFilled(a, b, c, d, col);
+                }
+            }
+        }
 
         private void MarkBlockExplored((int X, int Y) cell)
         {
