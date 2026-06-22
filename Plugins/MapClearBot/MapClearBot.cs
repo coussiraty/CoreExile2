@@ -47,6 +47,8 @@ namespace MapClearBot
         private DateTime pathAt = DateTime.MinValue;
         private bool offPath;
         private bool recovering;
+        private DateTime lastNudgeFlip = DateTime.MinValue;
+        private float nudgeSign = 1f;
         private float conv = 1f;
 
         private IDisposable? areaToken;
@@ -723,6 +725,26 @@ namespace MapClearBot
                 // direction bias on sloped terrain.
                 var world = new Vector3(target.Value.X * this.conv, target.Value.Y * this.conv, this.playerHeight);
                 var screen = this.Ctx.Render.WorldToScreen(world, this.playerHeight);
+
+                // While recovering from a stuck, slide perpendicular (alternating
+                // sides) to dislodge from a wall the 8-way heading is pushing into.
+                if (this.recovering)
+                {
+                    if ((DateTime.Now - this.lastNudgeFlip).TotalMilliseconds > 600)
+                    {
+                        this.nudgeSign = -this.nudgeSign;
+                        this.lastNudgeFlip = DateTime.Now;
+                    }
+
+                    var dir = screen - this.playerScreenRel;
+                    var len = dir.Length();
+                    if (len > 1f)
+                    {
+                        var perp = new Vector2(-dir.Y, dir.X) / len;
+                        screen += perp * (len * 0.8f) * this.nudgeSign;
+                    }
+                }
+
                 this.mover.MoveToward(this.playerScreenRel, screen, this.Settings.MoveDeadzonePx);
             }
             else if (this.GridToScreen(target.Value, out var abs))
@@ -975,12 +997,12 @@ namespace MapClearBot
 
         private void MarkExplored((int X, int Y) pg)
         {
-            // Mark a BLOB of coarse cells around the player (everything within the
-            // combat/clear radius is "seen"), not just the current cell. This keeps
-            // the nearest unexplored frontier consistently AHEAD of the player, so
-            // the heading stays stable instead of flipping to a just-passed cell.
+            // Reveal coarse cells around the player ONLY where there is line of sight
+            // (fog-of-war). This stops the explored region from leaking through walls,
+            // which previously sealed off frontiers and made the bot "clear" the map
+            // far too early instead of going to other rooms.
             var size = Math.Max(1, this.Settings.ExploreCellSize);
-            var r = Math.Max(1, (int)(this.Settings.CombatRange / size));
+            var r = Math.Max(2, (int)(this.Settings.CombatRange / size));
             var cx = pg.X / size;
             var cy = pg.Y / size;
             for (var dy = -r; dy <= r; dy++)
@@ -993,7 +1015,20 @@ namespace MapClearBot
                     }
 
                     var cell = (cx + dx, cy + dy);
-                    if (this.explored.Add(cell) && this.walkableCoarse != null && this.walkableCoarse.Contains(cell))
+                    if (this.explored.Contains(cell))
+                    {
+                        continue;
+                    }
+
+                    var tx = (cell.Item1 * size) + (size / 2);
+                    var ty = (cell.Item2 * size) + (size / 2);
+                    if (!this.pf.HasLineOfSight(pg.X, pg.Y, tx, ty))
+                    {
+                        continue;
+                    }
+
+                    this.explored.Add(cell);
+                    if (this.walkableCoarse != null && this.walkableCoarse.Contains(cell))
                     {
                         this.exploredWalkable++;
                     }
