@@ -23,6 +23,10 @@ namespace MapClearBot
     {
         private readonly Pathfinder pf = new();
         private readonly HashSet<(int, int)> explored = new();
+        private HashSet<(int, int)>? walkableCoarse;
+        private int totalWalkable;
+        private int exploredWalkable;
+        private bool areaComputed;
         private readonly MovementController mover = new();
         private Vector2 playerScreenRel;
         private float playerHeight;
@@ -130,6 +134,13 @@ namespace MapClearBot
             this.conv = terrain.WorldToGridConvertor <= 0 ? 1f : terrain.WorldToGridConvertor;
             this.mover.Configure(this.Settings.MoveUpKey, this.Settings.MoveDownKey, this.Settings.MoveLeftKey, this.Settings.MoveRightKey);
 
+            // Measure the area's walkable extent once (for the completion %).
+            if (!this.areaComputed && this.pf.Ready)
+            {
+                this.ComputeWalkableCoarse();
+                this.areaComputed = true;
+            }
+
             var pw0 = selfRender.WorldPosition;
             this.playerHeight = pw0.Z;
             this.playerScreenRel = this.Ctx.Render.WorldToScreen(pw0, pw0.Z);
@@ -219,11 +230,12 @@ namespace MapClearBot
 
                 var lifePct = self.TryGetComponent<ILife>(out var lf) ? lf.Health.CurrentInPercent : -1;
                 this.combatDebug =
-                    $"awake:{total} mon:{monsters} valid:{valid}(notTgt:{notTgt} dead:{dead} fr/use:{frUse}) " +
+                    $"map:{this.MapPercent}%  awake:{total} mon:{monsters} valid:{valid}(notTgt:{notTgt} dead:{dead} fr/use:{frUse}) " +
                     $"nearest:{(nd < 0 ? "none" : nd.ToString("F0"))} range:{this.Settings.CombatRange:F0} " +
                     $"state:{this.state} life%:{lifePct} q:{Input.Pending}{(types.Length > 0 ? " | types:" + types : string.Empty)}";
-                ImGui.GetBackgroundDrawList().AddText(
-                    new Vector2(20, 140), Draw.Color(new Vector4(1f, 1f, 0f, 1f)), this.combatDebug);
+                var dl = ImGui.GetBackgroundDrawList();
+                dl.AddText(new Vector2(20, 140), Draw.Color(new Vector4(1f, 1f, 0f, 1f)), this.combatDebug);
+                dl.AddText(new Vector2(20, 158), Draw.Color(new Vector4(0.3f, 1f, 0.4f, 1f)), $"Map cleared: {this.MapPercent}%");
 
                 if ((DateTime.Now - this.lastLog).TotalMilliseconds > 500)
                 {
@@ -304,7 +316,7 @@ namespace MapClearBot
             this.KeyBind("Toggle", ref this.Settings.ToggleKey, "tg");
             ImGui.SameLine();
             ImGui.Text($"State: {this.state}");
-            ImGui.Text($"Explored cells: {this.explored.Count}   Path: {(this.path?.Count ?? 0)}");
+            ImGui.Text($"Map cleared: {this.MapPercent}%  ({this.exploredWalkable}/{this.totalWalkable})   Path: {(this.path?.Count ?? 0)}");
             ImGui.Separator();
 
             ImGui.Checkbox("Attack with left click", ref this.Settings.AttackWithLeftClick);
@@ -928,13 +940,58 @@ namespace MapClearBot
             {
                 for (var dx = -r; dx <= r; dx++)
                 {
-                    if ((dx * dx) + (dy * dy) <= r * r)
+                    if ((dx * dx) + (dy * dy) > r * r)
                     {
-                        this.explored.Add((cx + dx, cy + dy));
+                        continue;
+                    }
+
+                    var cell = (cx + dx, cy + dy);
+                    if (this.explored.Add(cell) && this.walkableCoarse != null && this.walkableCoarse.Contains(cell))
+                    {
+                        this.exploredWalkable++;
                     }
                 }
             }
         }
+
+        // Samples the walkable grid at coarse-cell resolution to estimate how much
+        // of the area is walkable, for the map-completion percentage.
+        private void ComputeWalkableCoarse()
+        {
+            var size = Math.Max(1, this.Settings.ExploreCellSize);
+            var cols = this.pf.Width / size;
+            var rows = this.pf.Rows / size;
+            var set = new HashSet<(int, int)>();
+            for (var cy = 0; cy <= rows; cy++)
+            {
+                for (var cx = 0; cx <= cols; cx++)
+                {
+                    var bx = cx * size;
+                    var by = cy * size;
+                    if (this.pf.IsWalkable(bx + (size / 2), by + (size / 2)) ||
+                        this.pf.IsWalkable(bx + (size / 4), by + (size / 4)) ||
+                        this.pf.IsWalkable(bx + (3 * size / 4), by + (3 * size / 4)))
+                    {
+                        set.Add((cx, cy));
+                    }
+                }
+            }
+
+            this.walkableCoarse = set;
+            this.totalWalkable = set.Count;
+            this.exploredWalkable = 0;
+            foreach (var c in this.explored)
+            {
+                if (set.Contains(c))
+                {
+                    this.exploredWalkable++;
+                }
+            }
+        }
+
+        private int MapPercent => this.totalWalkable > 0
+            ? (int)(100L * this.exploredWalkable / this.totalWalkable)
+            : 0;
 
         private void MarkBlockExplored((int X, int Y) cell)
         {
@@ -967,6 +1024,10 @@ namespace MapClearBot
             this.path = null;
             this.lastProgressTime = DateTime.MinValue;
             this.state = "idle";
+            this.areaComputed = false;
+            this.walkableCoarse = null;
+            this.totalWalkable = 0;
+            this.exploredWalkable = 0;
         }
 
         private void DrawPath()
