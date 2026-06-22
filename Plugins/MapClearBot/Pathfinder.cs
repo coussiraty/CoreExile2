@@ -302,6 +302,69 @@ namespace MapClearBot
             return result;
         }
 
+        /// <summary>
+        ///     Flood-fills the COARSE walkable graph (cells of <paramref name="cellSize" />
+        ///     tiles) from <paramref name="start" /> and returns every reachable coarse
+        ///     cell. This is the area actually reachable from the player — pockets behind
+        ///     walls are excluded — used as the exploration universe and the map-%
+        ///     denominator (mirrors the reference bot's flood-fill of the passable area).
+        /// </summary>
+        /// <param name="start">start tile.</param>
+        /// <param name="cellSize">coarse cell size in tiles.</param>
+        /// <param name="maxCells">cap on reachable cells (bounds cost).</param>
+        /// <returns>set of reachable coarse cells.</returns>
+        public HashSet<(int X, int Y)> ReachableCoarse((int X, int Y) start, int cellSize, int maxCells)
+        {
+            var set = new HashSet<(int X, int Y)>();
+            if (!this.Ready || cellSize <= 0)
+            {
+                return set;
+            }
+
+            var seed = (start.X / cellSize, start.Y / cellSize);
+            var queue = new Queue<(int X, int Y)>();
+            queue.Enqueue(seed);
+            set.Add(seed);
+
+            while (queue.Count > 0 && set.Count < maxCells)
+            {
+                var (cx, cy) = queue.Dequeue();
+                foreach (var (dx, dy, _) in Neighbors)
+                {
+                    var nc = (cx + dx, cy + dy);
+                    if (set.Contains(nc) || !this.CoarseWalkable(nc.Item1, nc.Item2, cellSize))
+                    {
+                        continue;
+                    }
+
+                    set.Add(nc);
+                    queue.Enqueue(nc);
+                }
+            }
+
+            return set;
+        }
+
+        /// <summary>Whether a coarse cell has any walkable tile (sampled).</summary>
+        /// <param name="cx">coarse X.</param>
+        /// <param name="cy">coarse Y.</param>
+        /// <param name="cellSize">cell size in tiles.</param>
+        /// <returns>true if walkable.</returns>
+        public bool CoarseWalkable(int cx, int cy, int cellSize)
+        {
+            if (cx < 0 || cy < 0)
+            {
+                return false;
+            }
+
+            var bx = cx * cellSize;
+            var by = cy * cellSize;
+            return this.IsWalkable(bx + (cellSize / 2), by + (cellSize / 2)) ||
+                   this.IsWalkable(bx + (cellSize / 4), by + (cellSize / 4)) ||
+                   this.IsWalkable(bx + (3 * cellSize / 4), by + (3 * cellSize / 4)) ||
+                   this.IsWalkable(bx, by);
+        }
+
         private bool TryNearestWalkable(int x, int y, int radius, out (int X, int Y) result)
         {
             for (var r = 0; r <= radius; r++)

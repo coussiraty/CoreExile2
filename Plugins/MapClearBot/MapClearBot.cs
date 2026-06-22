@@ -143,19 +143,20 @@ namespace MapClearBot
                 this.lastAreaHash = hash;
             }
 
-            // Measure the area's walkable extent once (for the completion %).
-            if (!this.areaComputed && this.pf.Ready)
-            {
-                this.ComputeWalkableCoarse();
-                this.areaComputed = true;
-            }
-
             var pw0 = selfRender.WorldPosition;
             this.playerHeight = pw0.Z;
             this.playerScreenRel = this.Ctx.Render.WorldToScreen(pw0, pw0.Z);
 
             var playerGrid = selfRender.GridPosition;
             var pg = ((int)playerGrid.X, (int)playerGrid.Y);
+
+            // Compute the reachable area once per map (flood-fill from the player) for
+            // the completion % and the exploration universe.
+            if (!this.areaComputed && this.pf.Ready)
+            {
+                this.ComputeReachable(pg);
+                this.areaComputed = true;
+            }
 
             this.MarkExplored(pg);
             this.UpdateProgress(playerGrid);
@@ -629,19 +630,22 @@ namespace MapClearBot
 
             if (needPath)
             {
-                if (this.pf.TryNearestFrontier(pg, this.explored, this.Settings.ExploreCellSize, this.Settings.MaxPathNodes, out var frontier))
+                if (this.TryNearestUnvisited(pg, out var targetTile))
                 {
-                    var p = this.pf.FindPath(pg, frontier, this.Settings.MaxPathNodes);
+                    var p = this.pf.FindPath(pg, targetTile, this.Settings.MaxPathNodes);
                     if (p != null && p.Count >= 2)
                     {
                         this.path = this.pf.SimplifyLos(p);
-                        this.pathGoal = frontier;
+                        this.pathGoal = targetTile;
                         this.pathAt = now;
                         this.offPath = false;
                     }
                     else
                     {
-                        this.MarkBlockExplored(frontier); // unreachable; skip it
+                        // Reachable per the coarse flood, but A* couldn't route there
+                        // (node cap / fine-grid gap): mark it explored to skip it.
+                        var skipSize = Math.Max(1, this.Settings.ExploreCellSize);
+                        this.explored.Add((targetTile.X / skipSize, targetTile.Y / skipSize));
                         this.path = null;
                     }
                 }
@@ -667,6 +671,48 @@ namespace MapClearBot
             {
                 this.mover.Stop();
             }
+        }
+
+        // Nearest reachable coarse cell not yet explored, returned as a tile center.
+        // Operates over the player-reachable set (walkableCoarse) so it never targets
+        // pockets behind walls and only reports "cleared" when the reachable area is done.
+        private bool TryNearestUnvisited((int X, int Y) pg, out (int X, int Y) targetTile)
+        {
+            targetTile = default;
+            if (this.walkableCoarse == null || this.walkableCoarse.Count == 0)
+            {
+                return false;
+            }
+
+            var size = Math.Max(1, this.Settings.ExploreCellSize);
+            var pcx = pg.X / size;
+            var pcy = pg.Y / size;
+            (int X, int Y)? best = null;
+            long bestDist = long.MaxValue;
+            foreach (var c in this.walkableCoarse)
+            {
+                if (this.explored.Contains(c))
+                {
+                    continue;
+                }
+
+                long dx = c.Item1 - pcx;
+                long dy = c.Item2 - pcy;
+                var d = (dx * dx) + (dy * dy);
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    best = c;
+                }
+            }
+
+            if (best == null)
+            {
+                return false;
+            }
+
+            targetTile = ((best.Value.X * size) + (size / 2), (best.Value.Y * size) + (size / 2));
+            return true;
         }
 
         private bool TryPathToTransition((int X, int Y) pg, DateTime now)
@@ -1038,35 +1084,18 @@ namespace MapClearBot
             }
         }
 
-        // Samples the walkable grid at coarse-cell resolution to estimate how much
-        // of the area is walkable, for the map-completion percentage.
-        private void ComputeWalkableCoarse()
+        // Flood-fills the coarse walkable graph from the player to get the REACHABLE
+        // area (pockets behind walls excluded) — the exploration universe and map-%
+        // denominator. Mirrors the reference bot's flood-fill of the passable area.
+        private void ComputeReachable((int X, int Y) pg)
         {
             var size = Math.Max(1, this.Settings.ExploreCellSize);
-            var cols = this.pf.Width / size;
-            var rows = this.pf.Rows / size;
-            var set = new HashSet<(int, int)>();
-            for (var cy = 0; cy <= rows; cy++)
-            {
-                for (var cx = 0; cx <= cols; cx++)
-                {
-                    var bx = cx * size;
-                    var by = cy * size;
-                    if (this.pf.IsWalkable(bx + (size / 2), by + (size / 2)) ||
-                        this.pf.IsWalkable(bx + (size / 4), by + (size / 4)) ||
-                        this.pf.IsWalkable(bx + (3 * size / 4), by + (3 * size / 4)))
-                    {
-                        set.Add((cx, cy));
-                    }
-                }
-            }
-
-            this.walkableCoarse = set;
-            this.totalWalkable = set.Count;
+            this.walkableCoarse = this.pf.ReachableCoarse(pg, size, 200000);
+            this.totalWalkable = this.walkableCoarse.Count;
             this.exploredWalkable = 0;
             foreach (var c in this.explored)
             {
-                if (set.Contains(c))
+                if (this.walkableCoarse.Contains(c))
                 {
                     this.exploredWalkable++;
                 }
