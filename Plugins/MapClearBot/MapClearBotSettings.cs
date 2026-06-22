@@ -87,6 +87,9 @@ namespace MapClearBot
         /// <summary>Draw the explored area as a blue overlay on the ground.</summary>
         public bool ShowExplored = true;
 
+        /// <summary>Reveal radius (grid units) around the player, like the game's minimap reveal.</summary>
+        public float RevealRadius = 45f;
+
         /// <summary>Require line of sight to a monster before attacking.</summary>
         public bool UseLineOfSight = true;
 

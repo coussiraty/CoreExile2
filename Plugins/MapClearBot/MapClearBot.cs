@@ -27,6 +27,7 @@ namespace MapClearBot
         private int totalWalkable;
         private int exploredWalkable;
         private bool areaComputed;
+        private string lastAreaHash = string.Empty;
         private readonly MovementController mover = new();
         private Vector2 playerScreenRel;
         private float playerHeight;
@@ -111,13 +112,9 @@ namespace MapClearBot
         {
             this.HandleToggle();
 
-            if (!this.Settings.Enabled || !this.Ctx.Game.IsInGame || !this.Ctx.Game.IsForeground)
-            {
-                this.mover.Stop();
-                return;
-            }
-
-            if (this.Ctx.Ui.IsAnyLargePanelOpen)
+            // Tracking (explored map / fog) runs whenever in-game, even with the bot
+            // toggled off, so manual walking is recorded. Automation is gated later.
+            if (!this.Ctx.Game.IsInGame)
             {
                 this.mover.Stop();
                 return;
@@ -135,6 +132,16 @@ namespace MapClearBot
             this.pf.Bind(terrain);
             this.conv = terrain.WorldToGridConvertor <= 0 ? 1f : terrain.WorldToGridConvertor;
             this.mover.Configure(this.Settings.MoveUpKey, this.Settings.MoveDownKey, this.Settings.MoveLeftKey, this.Settings.MoveRightKey);
+
+            // New map? Reset explored only when the area hash changes — NOT when the
+            // bot is toggled — so exploration from before enabling is preserved and a
+            // fresh map correctly starts at 0%.
+            var hash = ig.AreaHash;
+            if (hash != this.lastAreaHash)
+            {
+                this.ResetRun();
+                this.lastAreaHash = hash;
+            }
 
             // Measure the area's walkable extent once (for the completion %).
             if (!this.areaComputed && this.pf.Ready)
@@ -161,15 +168,6 @@ namespace MapClearBot
             if (this.Settings.ShowPath)
             {
                 this.DrawPath();
-            }
-
-            // Discrete actions (attacks, clicks, mouse-move steps) are rate-limited.
-            // WASD movement is a held-key state that must update EVERY frame, so it is
-            // not gated here — only mouse mode (click-to-move) returns early.
-            var actionReady = (DateTime.Now - this.lastAction).TotalMilliseconds >= this.Settings.ActionDelayMs;
-            if (this.Settings.Movement == MovementMode.MouseClick && !actionReady)
-            {
-                return;
             }
 
             var awake = this.Ctx.Entities.Awake;
@@ -249,6 +247,21 @@ namespace MapClearBot
                     Diagnostics.Log("MapClearBot", this.combatDebug);
                     this.lastLog = DateTime.Now;
                 }
+            }
+
+            // ---- Automation gate: only act when enabled, focused and no panel. ----
+            if (!this.Settings.Enabled || !this.Ctx.Game.IsForeground || this.Ctx.Ui.IsAnyLargePanelOpen)
+            {
+                this.mover.Stop();
+                return;
+            }
+
+            // Discrete actions (attacks/clicks) are rate-limited; WASD movement updates
+            // every frame, so only mouse mode returns early on the throttle.
+            var actionReady = (DateTime.Now - this.lastAction).TotalMilliseconds >= this.Settings.ActionDelayMs;
+            if (this.Settings.Movement == MovementMode.MouseClick && !actionReady)
+            {
+                return;
             }
 
             // 1) Flee on low life.
@@ -997,12 +1010,12 @@ namespace MapClearBot
 
         private void MarkExplored((int X, int Y) pg)
         {
-            // Reveal coarse cells around the player ONLY where there is line of sight
-            // (fog-of-war). This stops the explored region from leaking through walls,
-            // which previously sealed off frontiers and made the bot "clear" the map
-            // far too early instead of going to other rooms.
+            // Reveal a disk of radius RevealRadius around the player, matching how the
+            // game's minimap reveals (RevealMinimapInRadius — a radius, NOT line of
+            // sight). The game's fog lives on the GPU and can't be read back, so we
+            // replicate it here.
             var size = Math.Max(1, this.Settings.ExploreCellSize);
-            var r = Math.Max(2, (int)(this.Settings.CombatRange / size));
+            var r = Math.Max(1, (int)(this.Settings.RevealRadius / size));
             var cx = pg.X / size;
             var cy = pg.Y / size;
             for (var dy = -r; dy <= r; dy++)
@@ -1015,20 +1028,7 @@ namespace MapClearBot
                     }
 
                     var cell = (cx + dx, cy + dy);
-                    if (this.explored.Contains(cell))
-                    {
-                        continue;
-                    }
-
-                    var tx = (cell.Item1 * size) + (size / 2);
-                    var ty = (cell.Item2 * size) + (size / 2);
-                    if (!this.pf.HasLineOfSight(pg.X, pg.Y, tx, ty))
-                    {
-                        continue;
-                    }
-
-                    this.explored.Add(cell);
-                    if (this.walkableCoarse != null && this.walkableCoarse.Contains(cell))
+                    if (this.explored.Add(cell) && this.walkableCoarse != null && this.walkableCoarse.Contains(cell))
                     {
                         this.exploredWalkable++;
                     }
