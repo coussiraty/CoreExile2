@@ -34,6 +34,7 @@ namespace MapClearBot
 
         private (int X, int Y) lastProgressPos;
         private DateTime lastProgressTime = DateTime.MinValue;
+        private DateTime lastLosTargetTime = DateTime.MinValue;
 
         private List<(int X, int Y)>? path;
         private (int X, int Y) pathGoal;
@@ -148,28 +149,43 @@ namespace MapClearBot
                 return;
             }
 
-            // 2) Combat.
+            // 2) Combat. Stay put while ANY monster is in range (don't flicker
+            //    between attacking and walking when grid line-of-sight blinks);
+            //    attack the best LoS target when the action cadence is ready.
             var monster = this.BestMonster(awake, playerGrid, pg);
             if (monster != null)
             {
-                this.mover.Stop(); // stand still to attack (released every frame)
-                if (actionReady)
+                this.lastLosTargetTime = DateTime.Now;
+            }
+
+            var monsterInRange = monster != null || this.AnyMonsterWithin(awake, playerGrid, this.Settings.CombatRange);
+            if (monsterInRange)
+            {
+                // If a monster is around but LoS stays blocked for a while, let
+                // explore run so we can reposition instead of standing forever.
+                var repositioning = monster == null &&
+                    (DateTime.Now - this.lastLosTargetTime).TotalMilliseconds > 1500;
+                if (!repositioning)
                 {
-                    if (this.Settings.AimMouseOnAttack || this.Settings.Movement == MovementMode.MouseClick)
+                    this.mover.Stop();
+                    if (monster != null && actionReady)
                     {
-                        this.AimAt(monster);
+                        if (this.Settings.AimMouseOnAttack || this.Settings.Movement == MovementMode.MouseClick)
+                        {
+                            this.AimAt(monster);
+                        }
+
+                        this.Attack();
+                        this.path = null; // re-path after the fight
+                        this.Act("combat");
+                    }
+                    else
+                    {
+                        this.state = monster != null ? "combat" : "combat (no LoS)";
                     }
 
-                    this.Attack();
-                    this.path = null; // re-path after the fight
-                    this.Act("combat");
+                    return;
                 }
-                else
-                {
-                    this.state = "combat";
-                }
-
-                return;
             }
 
             // 3) Loot.
@@ -366,6 +382,20 @@ namespace MapClearBot
             }
 
             return best;
+        }
+
+        private bool AnyMonsterWithin(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid, float range)
+        {
+            foreach (var e in awake)
+            {
+                if (IsValidMonster(e) && e.TryGetComponent<IRender>(out var r) &&
+                    Vector2.Distance(playerGrid, r.GridPosition) <= range)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private IEntity? NearestItem(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid)
@@ -713,8 +743,24 @@ namespace MapClearBot
 
         private void MarkExplored((int X, int Y) pg)
         {
+            // Mark a BLOB of coarse cells around the player (everything within the
+            // combat/clear radius is "seen"), not just the current cell. This keeps
+            // the nearest unexplored frontier consistently AHEAD of the player, so
+            // the heading stays stable instead of flipping to a just-passed cell.
             var size = Math.Max(1, this.Settings.ExploreCellSize);
-            this.explored.Add((pg.X / size, pg.Y / size));
+            var r = Math.Max(1, (int)(this.Settings.CombatRange / size));
+            var cx = pg.X / size;
+            var cy = pg.Y / size;
+            for (var dy = -r; dy <= r; dy++)
+            {
+                for (var dx = -r; dx <= r; dx++)
+                {
+                    if ((dx * dx) + (dy * dy) <= r * r)
+                    {
+                        this.explored.Add((cx + dx, cy + dy));
+                    }
+                }
+            }
         }
 
         private void MarkBlockExplored((int X, int Y) cell)
