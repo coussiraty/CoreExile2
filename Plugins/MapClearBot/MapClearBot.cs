@@ -159,15 +159,69 @@ namespace MapClearBot
             // Diagnostic HUD (drawn even without window focus while Draw path is on).
             if (this.Settings.ShowPath)
             {
-                var nearest = this.NearestMonsterInRange(awake, playerGrid, float.MaxValue);
-                var nd = nearest != null && nearest.TryGetComponent<IRender>(out var nr)
-                    ? Vector2.Distance(playerGrid, nr.GridPosition)
-                    : -1f;
+                int total = 0, monsters = 0, valid = 0, notTgt = 0, dead = 0, frUse = 0;
+                var nd = -1f;
+                var byType = new Dictionary<EntityType, int>();
+                foreach (var e in awake)
+                {
+                    if (!e.IsValid)
+                    {
+                        continue;
+                    }
+
+                    total++;
+                    byType.TryGetValue(e.Type, out var c);
+                    byType[e.Type] = c + 1;
+
+                    if (e.Type != EntityType.Monster)
+                    {
+                        continue;
+                    }
+
+                    monsters++;
+                    if (e.State == EntityState.MonsterFriendly || e.State == EntityState.Useless)
+                    {
+                        frUse++;
+                        continue;
+                    }
+
+                    if (e.TryGetComponent<ITargetable>(out var t) && !t.IsTargetable)
+                    {
+                        notTgt++;
+                        continue;
+                    }
+
+                    if (e.TryGetComponent<ILife>(out var l) && !l.IsAlive)
+                    {
+                        dead++;
+                        continue;
+                    }
+
+                    valid++;
+                    if (e.TryGetComponent<IRender>(out var r))
+                    {
+                        var d = Vector2.Distance(playerGrid, r.GridPosition);
+                        if (nd < 0 || d < nd)
+                        {
+                            nd = d;
+                        }
+                    }
+                }
+
+                var types = string.Empty;
+                if (monsters == 0)
+                {
+                    foreach (var kv in byType)
+                    {
+                        types += $" {kv.Key}:{kv.Value}";
+                    }
+                }
+
                 var lifePct = self.TryGetComponent<ILife>(out var lf) ? lf.Health.CurrentInPercent : -1;
                 this.combatDebug =
-                    $"state:{this.state}  nearestMon:{(nd < 0 ? "none" : nd.ToString("F0"))}  " +
-                    $"combatRange:{this.Settings.CombatRange:F0}  skills:{this.Settings.SkillKeys.Count}  " +
-                    $"leftClickAtk:{this.Settings.AttackWithLeftClick}  life%:{lifePct}  q:{Input.Pending}";
+                    $"awake:{total} mon:{monsters} valid:{valid}(notTgt:{notTgt} dead:{dead} fr/use:{frUse}) " +
+                    $"nearest:{(nd < 0 ? "none" : nd.ToString("F0"))} range:{this.Settings.CombatRange:F0} " +
+                    $"state:{this.state} life%:{lifePct} q:{Input.Pending}{(types.Length > 0 ? " | types:" + types : string.Empty)}";
                 ImGui.GetBackgroundDrawList().AddText(
                     new Vector2(20, 140), Draw.Color(new Vector4(1f, 1f, 0f, 1f)), this.combatDebug);
 
