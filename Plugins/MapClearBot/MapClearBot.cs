@@ -29,6 +29,7 @@ namespace MapClearBot
         private string captureToken = string.Empty;
 
         private bool wasToggleDown;
+        private int rotationIndex;
         private DateTime lastAction = DateTime.MinValue;
         private string state = "idle";
 
@@ -53,6 +54,12 @@ namespace MapClearBot
             {
                 var json = File.ReadAllText(this.SettingsPath);
                 this.Settings = JsonConvert.DeserializeObject<MapClearBotSettings>(json) ?? new MapClearBotSettings();
+            }
+
+            // Seed the skill rotation from the legacy single attack key.
+            if (this.Settings.SkillKeys.Count == 0 && this.Settings.AttackKey != 0)
+            {
+                this.Settings.SkillKeys.Add(this.Settings.AttackKey);
             }
 
             this.areaToken = this.Ctx.Events.OnAreaChange(this.ResetRun);
@@ -212,15 +219,16 @@ namespace MapClearBot
             }
 
             ImGui.SameLine();
-            ImGui.Text($"Toggle: {Input.KeyName(this.Settings.ToggleKey)}   State: {this.state}");
+            this.KeyBind("Toggle", ref this.Settings.ToggleKey, "tg");
+            ImGui.SameLine();
+            ImGui.Text($"State: {this.state}");
             ImGui.Text($"Explored cells: {this.explored.Count}   Path: {(this.path?.Count ?? 0)}");
             ImGui.Separator();
 
             ImGui.Checkbox("Attack with left click", ref this.Settings.AttackWithLeftClick);
             if (!this.Settings.AttackWithLeftClick)
             {
-                ImGui.SameLine();
-                ImGui.Text($"Attack key: {Input.KeyName(this.Settings.AttackKey)}");
+                this.DrawSkillKeys();
             }
 
             var mode = this.Settings.Movement;
@@ -251,7 +259,7 @@ namespace MapClearBot
                 if (!this.Settings.MoveWithLeftClick)
                 {
                     ImGui.SameLine();
-                    ImGui.Text($"Move key: {Input.KeyName(this.Settings.MoveKey)}");
+                    this.KeyBind("Move", ref this.Settings.MoveKey, "mvk");
                 }
             }
 
@@ -651,6 +659,22 @@ namespace MapClearBot
 
         private void Attack()
         {
+            if (!this.Settings.AttackWithLeftClick)
+            {
+                var keys = this.Settings.SkillKeys;
+                if (keys != null && keys.Count > 0)
+                {
+                    var vk = keys[this.rotationIndex % keys.Count];
+                    this.rotationIndex = (this.rotationIndex + 1) % keys.Count;
+                    if (vk != 0)
+                    {
+                        Input.PressKey(vk);
+                    }
+
+                    return;
+                }
+            }
+
             if (this.Settings.AttackWithLeftClick)
             {
                 Input.Click(Input.MouseButton.Left);
@@ -754,6 +778,57 @@ namespace MapClearBot
             {
                 this.captureToken = string.Empty;
             }
+        }
+
+        private void DrawSkillKeys()
+        {
+            var keys = this.Settings.SkillKeys;
+            ImGui.Text("Skill keys (pressed in turn during combat):");
+            int? removeAt = null;
+            for (var i = 0; i < keys.Count; i++)
+            {
+                var token = $"sk{i}";
+                var capturing = this.captureToken == token;
+                var label = capturing ? "press..." : $"{i + 1}: {Input.KeyName(keys[i])}";
+                if (ImGui.Button($"{label}##{token}", new Vector2(90, 0)))
+                {
+                    this.captureToken = capturing ? string.Empty : token;
+                }
+
+                if (capturing)
+                {
+                    if (Input.TryCaptureKey(out var vk))
+                    {
+                        keys[i] = vk;
+                        this.captureToken = string.Empty;
+                        this.SaveSettings();
+                    }
+                    else if (Input.IsKeyDown(Input.VkEscape))
+                    {
+                        this.captureToken = string.Empty;
+                    }
+                }
+
+                ImGui.SameLine();
+                if (ImGui.SmallButton($"remove##rm{i}"))
+                {
+                    removeAt = i;
+                }
+            }
+
+            if (removeAt.HasValue)
+            {
+                keys.RemoveAt(removeAt.Value);
+                this.SaveSettings();
+            }
+
+            if (ImGui.Button("Add skill"))
+            {
+                keys.Add(70); // default F
+                this.SaveSettings();
+            }
+
+            Draw.ToolTip("Add a skill key (default F). The bot cycles through these one per attack tick.");
         }
 
         private void MarkExplored((int X, int Y) pg)

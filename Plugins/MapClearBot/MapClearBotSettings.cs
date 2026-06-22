@@ -4,6 +4,7 @@
 
 namespace MapClearBot
 {
+    using System.Collections.Generic;
     using ExileBridge;
 
     /// <summary>How the bot moves the character.</summary>
@@ -50,8 +51,11 @@ namespace MapClearBot
         /// <summary>Attack with a left click instead of a key.</summary>
         public bool AttackWithLeftClick;
 
-        /// <summary>Virtual-key code of the attack/skill.</summary>
+        /// <summary>Virtual-key code of the attack/skill (legacy default; seeds <see cref="SkillKeys" />).</summary>
         public int AttackKey = 81; // Q
+
+        /// <summary>Skill keys cycled (round-robin) during combat. If empty, <see cref="AttackKey" /> is used.</summary>
+        public List<int> SkillKeys { get; set; } = new();
 
         /// <summary>Move with a left click instead of a key.</summary>
         public bool MoveWithLeftClick = true;
