@@ -34,12 +34,12 @@ namespace MapClearBot
 
         private (int X, int Y) lastProgressPos;
         private DateTime lastProgressTime = DateTime.MinValue;
-        private DateTime lastLosTargetTime = DateTime.MinValue;
 
         private List<(int X, int Y)>? path;
         private (int X, int Y) pathGoal;
         private DateTime pathAt = DateTime.MinValue;
         private bool offPath;
+        private bool recovering;
         private float conv = 1f;
 
         private IDisposable? areaToken;
@@ -149,43 +149,32 @@ namespace MapClearBot
                 return;
             }
 
-            // 2) Combat. Stay put while ANY monster is in range (don't flicker
-            //    between attacking and walking when grid line-of-sight blinks);
-            //    attack the best LoS target when the action cadence is ready.
-            var monster = this.BestMonster(awake, playerGrid, pg);
-            if (monster != null)
+            // 2) Combat. Attack the best in-range monster: prefer one with line of
+            //    sight, but otherwise just hit the NEAREST one so bosses/packs that
+            //    sit on awkward (non-walkable) cells still get attacked. Standing on
+            //    any in-range monster also prevents combat<->walk flicker.
+            var target = this.BestMonster(awake, playerGrid, pg)
+                         ?? this.NearestMonsterInRange(awake, playerGrid, this.Settings.CombatRange);
+            if (target != null)
             {
-                this.lastLosTargetTime = DateTime.Now;
-            }
-
-            var monsterInRange = monster != null || this.AnyMonsterWithin(awake, playerGrid, this.Settings.CombatRange);
-            if (monsterInRange)
-            {
-                // If a monster is around but LoS stays blocked for a while, let
-                // explore run so we can reposition instead of standing forever.
-                var repositioning = monster == null &&
-                    (DateTime.Now - this.lastLosTargetTime).TotalMilliseconds > 1500;
-                if (!repositioning)
+                this.mover.Stop();
+                if (actionReady)
                 {
-                    this.mover.Stop();
-                    if (monster != null && actionReady)
+                    if (this.Settings.AimMouseOnAttack || this.Settings.Movement == MovementMode.MouseClick)
                     {
-                        if (this.Settings.AimMouseOnAttack || this.Settings.Movement == MovementMode.MouseClick)
-                        {
-                            this.AimAt(monster);
-                        }
-
-                        this.Attack();
-                        this.path = null; // re-path after the fight
-                        this.Act("combat");
-                    }
-                    else
-                    {
-                        this.state = monster != null ? "combat" : "combat (no LoS)";
+                        this.AimAt(target);
                     }
 
-                    return;
+                    this.Attack();
+                    this.path = null; // re-path after the fight
+                    this.Act("combat");
                 }
+                else
+                {
+                    this.state = "combat";
+                }
+
+                return;
             }
 
             // 3) Loot.
@@ -384,18 +373,26 @@ namespace MapClearBot
             return best;
         }
 
-        private bool AnyMonsterWithin(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid, float range)
+        private IEntity? NearestMonsterInRange(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid, float range)
         {
+            IEntity? best = null;
+            var bestDist = float.MaxValue;
             foreach (var e in awake)
             {
-                if (IsValidMonster(e) && e.TryGetComponent<IRender>(out var r) &&
-                    Vector2.Distance(playerGrid, r.GridPosition) <= range)
+                if (!IsValidMonster(e) || !e.TryGetComponent<IRender>(out var r))
                 {
-                    return true;
+                    continue;
+                }
+
+                var d = Vector2.Distance(playerGrid, r.GridPosition);
+                if (d <= range && d < bestDist)
+                {
+                    bestDist = d;
+                    best = e;
                 }
             }
 
-            return false;
+            return best;
         }
 
         private IEntity? NearestItem(IReadOnlyCollection<IEntity> awake, Vector2 playerGrid)
@@ -440,12 +437,18 @@ namespace MapClearBot
         private void ExploreStep((int X, int Y) pg)
         {
             var now = DateTime.Now;
-            var stuck = (now - this.lastProgressTime).TotalSeconds > this.Settings.StuckSeconds;
-            if (stuck)
+
+            // Two-stage stuck handling. First, if we stop making progress, enter
+            // "recovery" (hug the path cell-by-cell) to push through tight corridors
+            // instead of immediately bailing. Only if we stay stuck well past that
+            // do we abandon the frontier and re-path elsewhere.
+            var noProgress = (now - this.lastProgressTime).TotalSeconds;
+            this.recovering = noProgress > this.Settings.StuckSeconds;
+            if (noProgress > this.Settings.StuckSeconds * 2.5)
             {
-                // Give up on the current frontier and skip a block around it.
                 this.MarkBlockExplored(this.pathGoal);
                 this.path = null;
+                this.recovering = false;
                 this.lastProgressTime = now;
             }
 
@@ -551,32 +554,10 @@ namespace MapClearBot
                 return;
             }
 
-            // Funnel: head toward the FARTHEST path point we still have line of
-            // sight to. This keeps a steady straight heading and only turns at
-            // corners — the key to smooth movement (no staircase, no wall-ramming).
-            (int X, int Y)? target = null;
-            var targetAbs = Vector2.Zero;
-            for (var i = this.path.Count - 1; i >= 0; i--)
-            {
-                var pt = this.path[i];
-                if (!this.pf.HasLineOfSight(pg.X, pg.Y, pt.X, pt.Y))
-                {
-                    continue;
-                }
-
-                if (this.Settings.Movement == MovementMode.Wasd)
-                {
-                    target = pt;
-                    break;
-                }
-
-                if (this.GridToScreen(pt, out targetAbs))
-                {
-                    target = pt; // farthest visible & on-screen for click-to-move
-                    break;
-                }
-            }
-
+            // Normally funnel toward the farthest visible point (smooth straight
+            // runs). When recovering from a stuck, hug the path cell-by-cell so the
+            // 8-way heading matches a tight corridor.
+            var target = this.recovering ? this.NearWaypoint(pg) : this.FunnelWaypoint(pg);
             if (target == null)
             {
                 // Strayed off the path (nothing visible): trigger a re-path.
@@ -595,11 +576,45 @@ namespace MapClearBot
                 var screen = this.Ctx.Render.WorldToScreen(world, this.playerHeight);
                 this.mover.MoveToward(this.playerScreenRel, screen, this.Settings.MoveDeadzonePx);
             }
-            else
+            else if (this.GridToScreen(target.Value, out var abs))
             {
-                Input.MoveMouse((int)targetAbs.X, (int)targetAbs.Y);
+                Input.MoveMouse((int)abs.X, (int)abs.Y);
                 this.Move();
             }
+        }
+
+        // Farthest path point still in line of sight (smooth steering).
+        private (int X, int Y)? FunnelWaypoint((int X, int Y) pg)
+        {
+            for (var i = this.path!.Count - 1; i >= 0; i--)
+            {
+                var pt = this.path[i];
+                if (!this.pf.HasLineOfSight(pg.X, pg.Y, pt.X, pt.Y))
+                {
+                    continue;
+                }
+
+                if (this.Settings.Movement == MovementMode.Wasd || this.GridToScreen(pt, out _))
+                {
+                    return pt;
+                }
+            }
+
+            return null;
+        }
+
+        // Closest path point a few tiles ahead (tight-corridor hugging).
+        private (int X, int Y)? NearWaypoint((int X, int Y) pg)
+        {
+            foreach (var pt in this.path!)
+            {
+                if (Math.Abs(pt.X - pg.X) + Math.Abs(pt.Y - pg.Y) >= 3)
+                {
+                    return pt;
+                }
+            }
+
+            return this.path![this.path.Count - 1];
         }
 
         // Moves toward a single world point, dispatching on the movement mode.
@@ -804,14 +819,14 @@ namespace MapClearBot
             }
 
             var dl = ImGui.GetBackgroundDrawList();
-            var window = this.Ctx.Game.WindowArea;
             var line = Draw.Color(new Vector4(0.2f, 0.9f, 1f, 0.8f));
             Vector2? prev = null;
             foreach (var pt in this.path)
             {
-                var world = new Vector3(pt.X * this.conv, pt.Y * this.conv, 0f);
-                var s = this.Ctx.Render.WorldToScreen(world, 0f);
-                var p = new Vector2(window.X + s.X, window.Y + s.Y);
+                // WorldToScreen is already overlay-relative; do NOT add the window
+                // offset (that double-shifts the drawing off to the side).
+                var world = new Vector3(pt.X * this.conv, pt.Y * this.conv, this.playerHeight);
+                var p = this.Ctx.Render.WorldToScreen(world, this.playerHeight);
                 if (prev.HasValue)
                 {
                     dl.AddLine(prev.Value, p, line, 2f);
@@ -820,9 +835,9 @@ namespace MapClearBot
                 prev = p;
             }
 
-            var goalWorld = new Vector3(this.pathGoal.X * this.conv, this.pathGoal.Y * this.conv, 0f);
-            var gs = this.Ctx.Render.WorldToScreen(goalWorld, 0f);
-            dl.AddCircleFilled(new Vector2(window.X + gs.X, window.Y + gs.Y), 6f, Draw.Color(new Vector4(1f, 0.5f, 0f, 1f)));
+            var goalWorld = new Vector3(this.pathGoal.X * this.conv, this.pathGoal.Y * this.conv, this.playerHeight);
+            var gs = this.Ctx.Render.WorldToScreen(goalWorld, this.playerHeight);
+            dl.AddCircleFilled(gs, 6f, Draw.Color(new Vector4(1f, 0.5f, 0f, 1f)));
         }
 
         private static bool IsValidMonster(IEntity e)
