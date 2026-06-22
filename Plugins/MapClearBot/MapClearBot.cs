@@ -32,6 +32,7 @@ namespace MapClearBot
         private int rotationIndex;
         private DateTime lastAction = DateTime.MinValue;
         private string state = "idle";
+        private string combatDebug = string.Empty;
 
         private (int X, int Y) lastProgressPos;
         private DateTime lastProgressTime = DateTime.MinValue;
@@ -149,6 +150,22 @@ namespace MapClearBot
             }
 
             var awake = this.Ctx.Entities.Awake;
+
+            // Diagnostic HUD (drawn even without window focus while Draw path is on).
+            if (this.Settings.ShowPath)
+            {
+                var nearest = this.NearestMonsterInRange(awake, playerGrid, float.MaxValue);
+                var nd = nearest != null && nearest.TryGetComponent<IRender>(out var nr)
+                    ? Vector2.Distance(playerGrid, nr.GridPosition)
+                    : -1f;
+                var lifePct = self.TryGetComponent<ILife>(out var lf) ? lf.Health.CurrentInPercent : -1;
+                this.combatDebug =
+                    $"state:{this.state}  nearestMon:{(nd < 0 ? "none" : nd.ToString("F0"))}  " +
+                    $"combatRange:{this.Settings.CombatRange:F0}  skills:{this.Settings.SkillKeys.Count}  " +
+                    $"leftClickAtk:{this.Settings.AttackWithLeftClick}  life%:{lifePct}  q:{Input.Pending}";
+                ImGui.GetBackgroundDrawList().AddText(
+                    new Vector2(20, 140), Draw.Color(new Vector4(1f, 1f, 0f, 1f)), this.combatDebug);
+            }
 
             // 1) Flee on low life.
             if (this.TryFlee(self, selfRender, awake, playerGrid))
