@@ -31,6 +31,7 @@ namespace MapClearBot
         private bool wasToggleDown;
         private int rotationIndex;
         private DateTime lastAction = DateTime.MinValue;
+        private DateTime lastLog = DateTime.MinValue;
         private string state = "idle";
         private string combatDebug = string.Empty;
 
@@ -62,6 +63,10 @@ namespace MapClearBot
             {
                 this.Settings.SkillKeys.Add(this.Settings.AttackKey);
             }
+
+            Diagnostics.Clear();
+            var skillNames = string.Join(",", this.Settings.SkillKeys.ConvertAll(Input.KeyName));
+            Diagnostics.Log("MapClearBot", $"OnEnable: movement={this.Settings.Movement} leftClickAtk={this.Settings.AttackWithLeftClick} skills=[{skillNames}] combatRange={this.Settings.CombatRange:F0} flee%={this.Settings.FleeLifePercent} actionDelay={this.Settings.ActionDelayMs} log={Diagnostics.FilePath}");
 
             this.areaToken = this.Ctx.Events.OnAreaChange(this.ResetRun);
         }
@@ -165,6 +170,12 @@ namespace MapClearBot
                     $"leftClickAtk:{this.Settings.AttackWithLeftClick}  life%:{lifePct}  q:{Input.Pending}";
                 ImGui.GetBackgroundDrawList().AddText(
                     new Vector2(20, 140), Draw.Color(new Vector4(1f, 1f, 0f, 1f)), this.combatDebug);
+
+                if ((DateTime.Now - this.lastLog).TotalMilliseconds > 500)
+                {
+                    Diagnostics.Log("MapClearBot", this.combatDebug);
+                    this.lastLog = DateTime.Now;
+                }
             }
 
             // 1) Flee on low life.
@@ -686,6 +697,7 @@ namespace MapClearBot
                     if (vk != 0)
                     {
                         Input.PressKey(vk);
+                        Diagnostics.Log("MapClearBot", $"attack -> key {Input.KeyName(vk)} (aimMouse={this.Settings.AimMouseOnAttack})");
                     }
 
                     return;
