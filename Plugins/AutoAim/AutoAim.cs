@@ -1322,8 +1322,8 @@ namespace AutoAim
                 return false;
             }
 
-            // A closed chest must be currently targetable (not hidden / not yet revealed).
-            if (entity.TryGetComponent<ITargetable>(out var targetable) && !targetable.IsTargetable)
+            // A closed chest must not be hidden / not-yet-revealed.
+            if (entity.TryGetComponent<ITargetable>(out var targetable) && targetable.IsHidden)
             {
                 return false;
             }
@@ -1445,7 +1445,9 @@ namespace AutoAim
                 return false;
             }
 
-            if (entity.TryGetComponent<ITargetable>(out var targetable) && !targetable.IsTargetable)
+            // Use IsHidden, not the strict IsTargetable (false for most ordinary
+            // monsters due to quest/interaction conditions).
+            if (entity.TryGetComponent<ITargetable>(out var targetable) && targetable.IsHidden)
             {
                 return false;
             }

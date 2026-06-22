@@ -115,6 +115,9 @@ namespace GameHelper.Sdk
 
         /// <inheritdoc />
         public bool IsTargetable => this.targetable.IsTargetable;
+
+        /// <inheritdoc />
+        public bool IsHidden => this.targetable.IsHidden;
     }
 
     /// <summary>Adapter for the <see cref="Buffs" /> component.</summary>

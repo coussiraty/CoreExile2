@@ -29,6 +29,13 @@ namespace GameHelper.RemoteObjects.Components
         public bool IsTargetable { get; private set; } = false;
 
         /// <summary>
+        ///     Gets a value indicating whether the entity is hidden from the player.
+        ///     Unlike <see cref="IsTargetable" /> this does not factor in the
+        ///     quest/interaction conditions, so it stays true for ordinary monsters.
+        /// </summary>
+        public bool IsHidden { get; private set; }
+
+        /// <summary>
         ///     Converts the <see cref="Targetable" /> class data to ImGui.
         /// </summary>
         internal override void ToImGui()
@@ -51,6 +58,7 @@ namespace GameHelper.RemoteObjects.Components
             var data = reader.ReadMemory<TargetableOffsets>(this.Address);
             this.OwnerEntityAddress = data.Header.EntityPtr;
             this.cache = data;
+            this.IsHidden = data.HiddenfromPlayer;
             this.IsTargetable = data.IsTargetable && !data.HiddenfromPlayer &&
                 data.NeedsTrue && data.MeetsQuestState && !data.NeedsFalse;
         }

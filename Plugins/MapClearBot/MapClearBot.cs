@@ -185,7 +185,7 @@ namespace MapClearBot
                         continue;
                     }
 
-                    if (e.TryGetComponent<ITargetable>(out var t) && !t.IsTargetable)
+                    if (e.TryGetComponent<ITargetable>(out var t) && t.IsHidden)
                     {
                         notTgt++;
                         continue;
@@ -1006,7 +1006,9 @@ namespace MapClearBot
                 return false;
             }
 
-            if (e.TryGetComponent<ITargetable>(out var t) && !t.IsTargetable)
+            // Use IsHidden, not the strict IsTargetable (which is false for most
+            // ordinary monsters because of quest/interaction conditions).
+            if (e.TryGetComponent<ITargetable>(out var t) && t.IsHidden)
             {
                 return false;
             }

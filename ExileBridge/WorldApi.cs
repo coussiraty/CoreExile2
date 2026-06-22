@@ -74,8 +74,16 @@ namespace ExileBridge
     /// <summary>Targetable component.</summary>
     public interface ITargetable : IComponent
     {
-        /// <summary>Gets a value indicating whether the entity is currently targetable.</summary>
+        /// <summary>
+        ///     Gets a value indicating whether the entity is currently targetable.
+        ///     Note: this is strict (factors in quest/interaction conditions) and is
+        ///     often false for ordinary monsters — prefer <see cref="IsHidden" /> for
+        ///     "can I attack this monster".
+        /// </summary>
         bool IsTargetable { get; }
+
+        /// <summary>Gets a value indicating whether the entity is hidden from the player.</summary>
+        bool IsHidden { get; }
     }
 
     /// <summary>Buffs/debuffs (status effects) currently applied to the entity.</summary>
