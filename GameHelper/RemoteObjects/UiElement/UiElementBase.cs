@@ -27,6 +27,11 @@ namespace GameHelper.RemoteObjects.UiElement
         // that was O(N) per traversal in passive-skill-tree-sized trees.
         private UiElementBase?[] childrenCache = Array.Empty<UiElementBase?>();
         protected uint flags; // IsVisible and ShouldModifyPosition information
+
+        // Rate-limit (Environment.TickCount64) for the "invalid/torn UI element" warning so
+        // racy reads during UI churn / area transitions don't flood the console.
+        private static long invalidSelfLastLogTick;
+
         private float localScaleMultiplier;
         private Vector2 relativePosition;
         private Vector2 unScaledSize; // Size before applying the scale multiplier.
@@ -225,7 +230,10 @@ namespace GameHelper.RemoteObjects.UiElement
         /// <inheritdoc />
         protected override void UpdateData(bool hasAddressChanged)
         {
-            this.UpdateData(Core.Process.Handle.ReadMemory<UiElementBaseOffset>(this.Address), hasAddressChanged);
+            // Read silently: the address may be a torn/stale child pointer (especially while
+            // walking the live UI tree during transitions). A failed read yields a default
+            // (zero) struct, which the overload below treats as an empty element.
+            this.UpdateData(Core.Process.Handle.ReadMemory<UiElementBaseOffset>(this.Address, logOnError: false), hasAddressChanged);
         }
 
         /// <summary>
@@ -233,13 +241,28 @@ namespace GameHelper.RemoteObjects.UiElement
         /// </summary>
         /// <param name="data">UiElementBaseOffset structure read from the game memory.</param>
         /// <param name="hasAddressChanged">has the address of this object changed or not.</param>
-        /// <exception cref="Exception">Throws an exception if it detects invalid UiElement.</exception>
         protected void UpdateData(UiElementBaseOffset data, bool hasAddressChanged)
         {
             if (data.Self != IntPtr.Zero && data.Self != this.Address)
             {
-                throw new Exception($"This (address: {this.Address.ToInt64():X})" +
-                                    $"is not a Ui Element. Self Address = {data.Self.ToInt64():X}");
+                // This address does not back a real UI element (its self-pointer doesn't
+                // match). This happens constantly and harmlessly: the UI tree is live and
+                // mutated by the game, so walking it (indexer, parent cache, plugins) hits
+                // torn/stale child pointers, especially during area transitions. Leave this
+                // element empty (it stays in its cleaned state) and bail — every consumer
+                // already treats an empty element as invisible/childless. Log at most once
+                // per 5s so a genuine offset/layout break still surfaces without flooding.
+                var now = Environment.TickCount64;
+                var last = System.Threading.Interlocked.Read(ref invalidSelfLastLogTick);
+                if (now - last > 30000 &&
+                    System.Threading.Interlocked.CompareExchange(ref invalidSelfLastLogTick, now, last) == last)
+                {
+                    Console.WriteLine($"[UiElementBase] skipped invalid/torn UI element " +
+                                      $"(addr=0x{this.Address.ToInt64():X}, Self=0x{data.Self.ToInt64():X}); " +
+                                      "racy UI reads are expected, suppressing similar warnings for 5s.");
+                }
+
+                return;
             }
 
             this.parentAddress = data.ParentPtr;

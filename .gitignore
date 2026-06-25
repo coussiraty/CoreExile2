@@ -10,3 +10,9 @@
 
 configs/
 docs/
+
+# runtime / temp
+imgui.ini
+logs/
+_re/
+_refsrc/

@@ -51,6 +51,15 @@ namespace GameHelper.Cache
                 return;
             }
 
+            // Only cache addresses that actually back a UI element (a real element stores
+            // its own address in its self-pointer at +0x08). A torn/garbage ParentPtr would
+            // otherwise be cached and then re-read every tick by UpdateAllParentsParallel,
+            // flooding the console with "is not a Ui Element" throws. The read is silent.
+            if (!IsRealUiElement(address))
+            {
+                return;
+            }
+
             if (this.grandparent != null)
             {
                 bool inGrandparent;
@@ -79,6 +88,15 @@ namespace GameHelper.Cache
                     }
                 }
             }
+        }
+
+        // A real UI element stores its own address at offset 0x08 (UiElementBaseOffset.Self).
+        private const int SelfPtrOffset = 0x08;
+
+        private static bool IsRealUiElement(IntPtr address)
+        {
+            return Core.Process.Handle.TryReadMemory<IntPtr>(address + SelfPtrOffset, out var self) &&
+                   self == address;
         }
 
         public UiElementBase GetParent(IntPtr address)

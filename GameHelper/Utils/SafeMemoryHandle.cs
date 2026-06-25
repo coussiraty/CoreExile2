@@ -73,7 +73,7 @@ namespace GameHelper.Utils
         /// <typeparam name="T">type of data structure to read.</typeparam>
         /// <param name="address">address to read the data from.</param>
         /// <returns>data from the process in T format.</returns>
-        internal T ReadMemory<T>(IntPtr address)
+        internal T ReadMemory<T>(IntPtr address, bool logOnError = true)
             where T : unmanaged
         {
             // Silent skip for an unreadable address mirrors the historical behaviour
@@ -89,10 +89,19 @@ namespace GameHelper.Utils
                 return result;
             }
 
-            Console.WriteLine("ERROR: Failed To Read the Memory (T)" +
-                              $" due to Error Number: 0x{NativeWrapper.LastError:X} on " +
-                              $"adress 0x{address.ToInt64():X} for type {typeof(T).Name}" +
-                              $" [caller: {DescribeCaller()}]");
+            // logOnError=false on inherently-racy paths (e.g. parsing a live, concurrently
+            // mutated item's components) so expected torn reads don't flood the console.
+            // Even when enabled, the log is globally rate-limited so a transient flood from
+            // any racy read site can't drown the console while a genuine, persistent
+            // offset/layout break still surfaces (it keeps re-logging every few seconds).
+            if (logOnError && ThrottleReadErrorLog())
+            {
+                Console.WriteLine("ERROR: Failed To Read the Memory (T)" +
+                                  $" due to Error Number: 0x{NativeWrapper.LastError:X} on " +
+                                  $"adress 0x{address.ToInt64():X} for type {typeof(T).Name}" +
+                                  $" [caller: {DescribeCaller()}]");
+            }
+
             return default;
         }
 
@@ -154,7 +163,7 @@ namespace GameHelper.Utils
         /// <typeparam name="T">Object type to read.</typeparam>
         /// <param name="nativeContainer">StdVector address to read from.</param>
         /// <returns>An array of elements of type T.</returns>
-        internal T[] ReadStdVector<T>(StdVector nativeContainer)
+        internal T[] ReadStdVector<T>(StdVector nativeContainer, bool logOnError = true)
             where T : unmanaged
         {
             var typeSize = Marshal.SizeOf<T>();
@@ -164,7 +173,7 @@ namespace GameHelper.Utils
                 return Array.Empty<T>();
             }
 
-            return this.ReadMemoryArray<T>(nativeContainer.First, (int)length / typeSize);
+            return this.ReadMemoryArray<T>(nativeContainer.First, (int)length / typeSize, logOnError);
         }
 
         /// <summary>
@@ -176,7 +185,7 @@ namespace GameHelper.Utils
         /// <returns>
         ///     An array of type T and of size nsize. In case or any error it returns empty array.
         /// </returns>
-        internal T[] ReadMemoryArray<T>(IntPtr address, int nsize)
+        internal T[] ReadMemoryArray<T>(IntPtr address, int nsize, bool logOnError = true)
             where T : unmanaged
         {
             if (this.IsInvalid || !IsValidAddress(address) || nsize <= 0)
@@ -208,9 +217,30 @@ namespace GameHelper.Utils
             }
             catch (Exception e)
             {
-                Console.WriteLine($"ERROR: {e.Message}");
+                if (logOnError && ThrottleReadErrorLog())
+                {
+                    Console.WriteLine($"ERROR: {e.Message}");
+                }
+
                 return Array.Empty<T>();
             }
+        }
+
+        // Global rate-limit for memory-read error logging. Expected torn reads on live game
+        // memory happen in bursts (UI churn, area transitions); without this they flood the
+        // console. Best-effort (races just allow a couple extra lines, which is harmless).
+        private static long lastReadErrorLogTick;
+
+        private static bool ThrottleReadErrorLog()
+        {
+            var now = Environment.TickCount64;
+            if (now - lastReadErrorLogTick < 2000)
+            {
+                return false;
+            }
+
+            lastReadErrorLogTick = now;
+            return true;
         }
 
         /// <summary>
@@ -256,7 +286,7 @@ namespace GameHelper.Utils
         /// </summary>
         /// <param name="nativecontainer">native object of std::wstring.</param>
         /// <returns>string.</returns>
-        internal string ReadStdWString(StdWString nativecontainer)
+        internal string ReadStdWString(StdWString nativecontainer, bool logOnError = true)
         {
             const int MaxAllowed = 1000;
             if (nativecontainer.Length <= 0 ||
@@ -284,7 +314,7 @@ namespace GameHelper.Utils
             }
             else
             {
-                var buffer = this.ReadMemoryArray<byte>(nativecontainer.Buffer, nativecontainer.Length * 2);
+                var buffer = this.ReadMemoryArray<byte>(nativecontainer.Buffer, nativecontainer.Length * 2, logOnError);
                 return Encoding.Unicode.GetString(buffer);
             }
         }
@@ -294,9 +324,9 @@ namespace GameHelper.Utils
         /// </summary>
         /// <param name="address">pointer to the string.</param>
         /// <returns>string read.</returns>
-        internal string ReadString(IntPtr address)
+        internal string ReadString(IntPtr address, bool logOnError = true)
         {
-            var buffer = this.ReadMemoryArray<byte>(address, 128);
+            var buffer = this.ReadMemoryArray<byte>(address, 128, logOnError);
             var count = Array.IndexOf<byte>(buffer, 0x00, 0);
             if (count > 0)
             {
@@ -312,9 +342,9 @@ namespace GameHelper.Utils
         /// </summary>
         /// <param name="address">points to the Unicode string pointer.</param>
         /// <returns>string read from the memory.</returns>
-        internal string ReadUnicodeString(IntPtr address)
+        internal string ReadUnicodeString(IntPtr address, bool logOnError = true)
         {
-            var buffer = this.ReadMemoryArray<byte>(address, 256);
+            var buffer = this.ReadMemoryArray<byte>(address, 256, logOnError);
             var count = 0x00;
             for (var i = 0; i < buffer.Length - 2; i++)
             {
@@ -464,7 +494,7 @@ namespace GameHelper.Utils
         /// <typeparam name="TValue">value type that the std bucket contains.</typeparam>
         /// <param name="nativeContainer">native object of the std::bucket.</param>
         /// <returns>a array containing all the valid values found in std::bucket.</returns>
-        internal TValue[] ReadStdBucket<TValue>(StdBucket nativeContainer)
+        internal TValue[] ReadStdBucket<TValue>(StdBucket nativeContainer, bool logOnError = true)
             where TValue : unmanaged
         {
             if (nativeContainer.Data.First == IntPtr.Zero ||
@@ -473,7 +503,7 @@ namespace GameHelper.Utils
                 return Array.Empty<TValue>();
             }
 
-            return this.ReadStdVector<TValue>(nativeContainer.Data);
+            return this.ReadStdVector<TValue>(nativeContainer.Data, logOnError);
         }
 
         /// <summary>

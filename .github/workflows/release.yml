@@ -1,0 +1,84 @@
+name: Release
+
+# Cut a release by pushing a version tag, e.g.:
+#   git tag v2.5.0 && git push origin v2.5.0
+# This builds the whole solution, publishes the full app zip, a per-plugin zip,
+# and a plugins.json manifest (name -> version -> download URL) so the Launcher can
+# auto-update the app and update individual plugins independently.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build (Release)
+        run: dotnet build GameOverlay.sln -c Release --nologo
+
+      - name: Package app + plugins + manifest
+        id: package
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $exe = Get-ChildItem -Recurse -Filter GameHelper.exe -Path GameHelper/bin/Release | Select-Object -First 1
+          if (-not $exe) { Write-Error "GameHelper.exe not found in GameHelper/bin/Release"; exit 1 }
+          $appDir = $exe.Directory.FullName
+          Write-Host "App output: $appDir"
+
+          $out = Join-Path $env:RUNNER_TEMP "release"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          # Full app zip (host + ExileBridge + bundled plugins).
+          $appZip = Join-Path $out "CoreExile2-$tag.zip"
+          Compress-Archive -Path (Join-Path $appDir '*') -DestinationPath $appZip -Force
+
+          # Per-plugin zips + manifest. Each Plugins/<Name> folder becomes plugin-<Name>.zip;
+          # the plugin version is the FileVersion of its DLL.
+          $pluginsDir = Join-Path $appDir 'Plugins'
+          $manifest = @()
+          if (Test-Path $pluginsDir) {
+            foreach ($dir in Get-ChildItem -Directory $pluginsDir) {
+              $name = $dir.Name
+              $dll = Join-Path $dir.FullName "$name.dll"
+              if (-not (Test-Path $dll)) { continue }
+              $ver = (Get-Item $dll).VersionInfo.FileVersion
+              if (-not $ver) { $ver = '1.0.0.0' }
+              $zip = Join-Path $out "plugin-$name.zip"
+              Compress-Archive -Path (Join-Path $dir.FullName '*') -DestinationPath $zip -Force
+              $manifest += [ordered]@{
+                name = $name
+                version = $ver
+                asset = "plugin-$name.zip"
+                url = "https://github.com/${{ github.repository }}/releases/download/$tag/plugin-$name.zip"
+              }
+            }
+          }
+          $manifestObj = [ordered]@{ app = $tag; plugins = $manifest }
+          $manifestPath = Join-Path $out 'plugins.json'
+          $manifestObj | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath -Encoding utf8
+          Get-Content $manifestPath | Write-Host
+          "out=$out" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $out = "${{ steps.package.outputs.out }}"
+          $assets = Get-ChildItem -Path $out | ForEach-Object { $_.FullName }
+          gh release create $tag $assets --repo "${{ github.repository }}" --title $tag --notes "Automated release $tag." --latest

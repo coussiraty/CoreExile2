@@ -25,7 +25,10 @@ namespace Launcher
                 AutoUpdate.LaunchUpdateAndExit();
                 return;
             }
-            
+
+            // App is current; update individual plugins (safe — host not running, no DLL lock).
+            await PluginUpdater.CheckAndUpdatePluginsAsync(gameHelperDir);
+
             try
             {
                 Console.WriteLine("\n\nPreparing GameHelper...");

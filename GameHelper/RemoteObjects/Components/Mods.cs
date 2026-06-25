@@ -65,11 +65,11 @@ namespace GameHelper.RemoteObjects.Components
                 this.ExplicitMods.Clear();
                 this.EnchantMods.Clear();
                 this.HellscapeMods.Clear();
-                ObjectMagicProperties.AddToMods(this.ImplicitMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.ImplicitMods));
-                ObjectMagicProperties.AddToMods(this.ExplicitMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.ExplicitMods));
-                ObjectMagicProperties.AddToMods(this.EnchantMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.EnchantMods));
-                ObjectMagicProperties.AddToMods(this.HellscapeMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.HellscapeMods));
-                ObjectMagicProperties.AddToMods(this.HellscapeMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.CrucibleMods));
+                ObjectMagicProperties.AddToMods(this.ImplicitMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.ImplicitMods, logOnError: false));
+                ObjectMagicProperties.AddToMods(this.ExplicitMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.ExplicitMods, logOnError: false));
+                ObjectMagicProperties.AddToMods(this.EnchantMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.EnchantMods, logOnError: false));
+                ObjectMagicProperties.AddToMods(this.HellscapeMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.HellscapeMods, logOnError: false));
+                ObjectMagicProperties.AddToMods(this.HellscapeMods, reader.ReadStdVector<ModArrayStruct>(data.Details0.Mods.CrucibleMods, logOnError: false));
             }
         }
     }

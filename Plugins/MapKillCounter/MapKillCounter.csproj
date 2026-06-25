@@ -4,7 +4,7 @@
     <OutputType>Library</OutputType>
     <Version>1.0.0</Version>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <Nullable>disable</Nullable>
+    <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <NoWarn>1701;1702; 1591</NoWarn>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -29,8 +29,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- A migrated plugin references ONLY ExileBridge. Private=false: the host
-         already loads ExileBridge.dll (Default ALC), so we must not copy our own. -->
+    <!-- A plugin references ONLY ExileBridge. Private=false: the host already loads
+         ExileBridge.dll (Default ALC), so we must not copy our own. -->
     <ProjectReference Include="..\..\ExileBridge\ExileBridge.csproj">
       <Private>false</Private>
       <CopyLocalSatelliteAssemblies>false</CopyLocalSatelliteAssemblies>

@@ -155,11 +155,13 @@ namespace GameHelper.RemoteObjects
 
         private void AddFileIfLoadedInCurrentArea(SafeMemoryHandle reader, IntPtr address)
         {
-            var information = reader.ReadMemory<FileInfoValueStruct>(address);
+            // Bulk scan of the live loaded-files table during/just after area changes; torn
+            // reads are expected here, so read silently to avoid flooding the console.
+            var information = reader.ReadMemory<FileInfoValueStruct>(address, logOnError: false);
             if (information.AreaChangeCount > FileInfoValueStruct.IGNORE_FIRST_X_AREAS &&
                 information.AreaChangeCount == Core.AreaChangeCounter.Value)
             {
-                var name = reader.ReadStdWString(information.Name).Split('@')[0];
+                var name = reader.ReadStdWString(information.Name, logOnError: false).Split('@')[0];
                 this.PathNames.AddOrUpdate(name, information.AreaChangeCount,
                     (key, oldValue) => { return Math.Max(oldValue, information.AreaChangeCount); });
             }

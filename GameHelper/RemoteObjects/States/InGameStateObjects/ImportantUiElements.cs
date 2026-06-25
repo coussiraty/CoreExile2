@@ -524,22 +524,24 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
                 return null;
             }
 
+            // Atlas node data is read from live UI memory and is racy while the atlas panel
+            // updates; torn reads are expected, so read silently to avoid console spam.
             var reader = Core.Process.Handle;
-            var nodeDataStorage = reader.ReadMemory<IntPtr>(nodeAddr + 0x10);
+            var nodeDataStorage = reader.ReadMemory<IntPtr>(nodeAddr + 0x10, logOnError: false);
             if (nodeDataStorage == IntPtr.Zero)
             {
                 return null;
             }
 
-            var nodeData = reader.ReadMemory<IntPtr>(nodeDataStorage + 0x20);
+            var nodeData = reader.ReadMemory<IntPtr>(nodeDataStorage + 0x20, logOnError: false);
             if (nodeData == IntPtr.Zero)
             {
                 return null;
             }
 
-            var gridPosition = reader.ReadMemory<StdTuple2D<int>>(nodeAddr + 0x320);
-            var biomeId = reader.ReadMemory<byte>(nodeData + AtlasNodeBiomeIdOffset);
-            var status = reader.ReadMemory<byte>(nodeData + AtlasNodeStatusByteOffset);
+            var gridPosition = reader.ReadMemory<StdTuple2D<int>>(nodeAddr + 0x320, logOnError: false);
+            var biomeId = reader.ReadMemory<byte>(nodeData + AtlasNodeBiomeIdOffset, logOnError: false);
+            var status = reader.ReadMemory<byte>(nodeData + AtlasNodeStatusByteOffset, logOnError: false);
             var state = (status & AtlasNodeCompletedBit) != 0
                 ? AtlasMapNodeState.CompletedBase
                 : (status & AtlasNodeAccessibleBit) != 0
@@ -547,16 +549,16 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
                     : AtlasMapNodeState.None;
 
             var mapId = string.Empty;
-            var mapDataWrapper = reader.ReadMemory<IntPtr>(nodeData + AtlasNodeMapDataOffset);
+            var mapDataWrapper = reader.ReadMemory<IntPtr>(nodeData + AtlasNodeMapDataOffset, logOnError: false);
             if (mapDataWrapper != IntPtr.Zero)
             {
-                var stringHeader = reader.ReadMemory<IntPtr>(mapDataWrapper);
+                var stringHeader = reader.ReadMemory<IntPtr>(mapDataWrapper, logOnError: false);
                 if (stringHeader != IntPtr.Zero)
                 {
-                    var stringBuffer = reader.ReadMemory<IntPtr>(stringHeader);
+                    var stringBuffer = reader.ReadMemory<IntPtr>(stringHeader, logOnError: false);
                     if (stringBuffer != IntPtr.Zero)
                     {
-                        mapId = reader.ReadUnicodeString(stringBuffer);
+                        mapId = reader.ReadUnicodeString(stringBuffer, logOnError: false);
                     }
                 }
             }

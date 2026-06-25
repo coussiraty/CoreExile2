@@ -323,7 +323,10 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
                     return false;
                 }
 
-                this.Path = reader.ReadStdWString(entityDetails.name);
+                // Item/entity component memory is live and mutated by the game, so torn
+                // reads here are expected and recoverable (caller retries next tick). Read
+                // silently so they don't flood the console.
+                this.Path = reader.ReadStdWString(entityDetails.name, logOnError: false);
                 if (string.IsNullOrEmpty(this.Path))
                 {
                     return false;
@@ -340,15 +343,15 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
                 }
 
                 var namesAndIndexes = reader.ReadStdBucket<ComponentNameAndIndexStruct>(
-                    lookupPtr.ComponentsNameAndIndex);
-                var entityComponent = reader.ReadStdVector<IntPtr>(idata.ComponentListPtr);
+                    lookupPtr.ComponentsNameAndIndex, logOnError: false);
+                var entityComponent = reader.ReadStdVector<IntPtr>(idata.ComponentListPtr, logOnError: false);
 
                 for (var i = 0; i < namesAndIndexes.Length; i++)
                 {
                     var nameAndIndex = namesAndIndexes[i];
                     if (nameAndIndex.Index >= 0 && nameAndIndex.Index < entityComponent.Length)
                     {
-                        var name = reader.ReadString(nameAndIndex.NamePtr);
+                        var name = reader.ReadString(nameAndIndex.NamePtr, logOnError: false);
                         if (!string.IsNullOrEmpty(name))
                         {
                             this.componentAddresses[name] = entityComponent[nameAndIndex.Index];

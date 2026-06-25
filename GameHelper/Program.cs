@@ -19,6 +19,9 @@ namespace GameHelper
         /// </summary>
         private static async Task Main()
         {
+            // Mirror console output to logs/console.log so diagnostics are readable from disk.
+            ConsoleTee.Install();
+
             AppDomain.CurrentDomain.UnhandledException += (sender, exceptionArgs) =>
             {
                 var errorText = "Program exited with message:\n " + exceptionArgs.ExceptionObject;

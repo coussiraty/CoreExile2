@@ -206,6 +206,9 @@ namespace GameHelper.Sdk
         public Vector2 BaseResolution => new(
             (float)GameOffsets.Objects.UiElement.UiElementBaseFuncs.BaseResolution.X,
             (float)GameOffsets.Objects.UiElement.UiElementBaseFuncs.BaseResolution.Y);
+
+        /// <inheritdoc />
+        public IReadOnlyList<IItemSlot> EnumerateOpenItemSlots() => ItemSlotScanner.Scan();
     }
 
     /// <summary>Overlay metrics + texture management adapter.</summary>

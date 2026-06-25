@@ -80,11 +80,11 @@ namespace GameHelper.RemoteObjects.Components
             {
                 this.Mods.Clear();
                 this.ModNames.Clear();
-                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.ImplicitMods));
-                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.ExplicitMods));
-                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.EnchantMods));
-                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.HellscapeMods));
-                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.CrucibleMods));
+                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.ImplicitMods, logOnError: false));
+                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.ExplicitMods, logOnError: false));
+                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.EnchantMods, logOnError: false));
+                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.HellscapeMods, logOnError: false));
+                AddToMods(this.Mods, reader.ReadStdVector<ModArrayStruct>(data.Details1.Mods.CrucibleMods, logOnError: false));
                 _ = this.Mods.All(k => this.ModNames.Add(k.name));
                 base.StatUpdator(this.ModStats, data.Details1.StatsFromMods);
             }
@@ -121,7 +121,7 @@ namespace GameHelper.RemoteObjects.Components
             return Core.GgpkStringCache.AddOrGetExisting(modsDatRowAddress, key =>
             {
                 var reader = Core.Process.Handle;
-                return reader.ReadUnicodeString(reader.ReadMemory<IntPtr>(key));
+                return reader.ReadUnicodeString(reader.ReadMemory<IntPtr>(key, logOnError: false), logOnError: false);
             });
         }
 
@@ -138,7 +138,7 @@ namespace GameHelper.RemoteObjects.Components
             }
             else
             {
-                var values = Core.Process.Handle.ReadStdVector<int>(valuesPtr);
+                var values = Core.Process.Handle.ReadStdVector<int>(valuesPtr, logOnError: false);
                 if (values.Length > 1)
                 {
                     return (values[0], values[1]);

@@ -492,6 +492,14 @@ namespace ExileBridge
 
         /// <summary>Gets the game's base UI resolution (used for map scaling math).</summary>
         Vector2 BaseResolution { get; }
+
+        /// <summary>
+        ///     Enumerates the item slots in the currently open stash/inventory panels,
+        ///     each with its on-screen rectangle and price-relevant item data. Returns an
+        ///     empty list when no such panel is open. Intended to be called once per frame.
+        /// </summary>
+        /// <returns>the visible item slots (left = stash, right = inventory).</returns>
+        IReadOnlyList<IItemSlot> EnumerateOpenItemSlots();
     }
 
     /// <summary>Projects world/grid coordinates to screen space.</summary>
