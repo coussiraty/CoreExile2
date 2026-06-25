@@ -567,6 +567,11 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
             {
                 this.EntityType = EntityTypes.Shrine;
             }
+            else if (this.componentAddresses.ContainsKey("WorldItem"))
+            {
+                // A dropped item on the ground: a "WorldItem" entity wrapping the actual item.
+                this.EntityType = EntityTypes.Item;
+            }
             else if (this.IsInSpecialMiscObjPaths())
             {
                 this.EntityType = EntityTypes.OtherImportantObjects;

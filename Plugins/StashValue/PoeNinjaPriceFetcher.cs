@@ -52,7 +52,7 @@ namespace StashValue
         public const int SourcePoeNinja = 0;
         public const int SourcePoe2Scout = 1;
 
-        private const int CacheSchemaVersion = 2;
+        private const int CacheSchemaVersion = 3;
 
         private static readonly string[] ScoutCurrencyCategories =
         {
@@ -68,8 +68,9 @@ namespace StashValue
 
         private static readonly string[] NinjaExchangeTypes =
         {
-            "Ritual", "Currency", "Runes", "Idols", "Essences", "Fragments", "Abyss", "Breach",
-            "Delirium", "Expedition", "Ultimatum", "UncutGems",
+            // "Ritual" also carries Omens (Omen of Chance, Omen of Light, ...).
+            "Ritual", "Currency", "Runes", "SoulCores", "Idols", "Essences", "Fragments", "Abyss",
+            "Breach", "Delirium", "Expedition", "Ultimatum", "UncutGems",
         };
 
         private static readonly string[] NinjaStashTypes =
@@ -98,6 +99,65 @@ namespace StashValue
             ["chaosuniquecharm"] = "Forsaken Bangle",
             ["antidoteuniquecharm"] = "Arakaali's Gift",
             ["sapphireuniquecharm"] = "Breath of the Mountains",
+
+            // Currency: maps the item's GGPK metadata base name (what the overlay reads from
+            // memory) to poe.ninja / poe2scout's display name. Most match the poe2scout icon
+            // art name automatically, but several differ (e.g. Vaal Orb's art is "CurrencyVaal"
+            // yet the item metadata is "CurrencyCorrupt"); those would otherwise go unpriced.
+            // Verified against the live poe2scout currency listing.
+            ["currencyupgradetomagic"] = "Orb of Transmutation",
+            ["currencyaddmodtomagic"] = "Orb of Augmentation",
+            ["currencyupgradetorare"] = "Orb of Alchemy",
+            ["currencyupgrademagictorare"] = "Regal Orb",
+            ["currencyaddmodtorare"] = "Exalted Orb",
+            ["currencyrerollrare"] = "Chaos Orb",
+            ["currencymodvalues"] = "Divine Orb",
+            ["currencycorrupt"] = "Vaal Orb",
+            ["currencyannul"] = "Orb of Annulment",
+            ["currencyannulmodtorare"] = "Orb of Annulment",
+            ["currencyweaponquality"] = "Blacksmith's Whetstone",
+            ["currencyweaponmagicquality"] = "Arcanist's Etcher",
+            ["currencyarmourquality"] = "Armourer's Scrap",
+            ["currencygemquality"] = "Gemcutter's Prism",
+            ["currencyflaskquality"] = "Glassblower's Bauble",
+            ["currencyidentification"] = "Scroll of Wisdom",
+            ["currencyaddequipmentsocket"] = "Artificer's Orb",
+            ["currencyupgradetounique"] = "Orb of Chance",
+            ["currencyaddskillgemsocket2"] = "Lesser Jeweller's Orb",
+            ["currencyaddskillgemsocket3"] = "Greater Jeweller's Orb",
+            ["currencyaddskillgemsocket4"] = "Perfect Jeweller's Orb",
+            ["currencyrerollsocketnumbers01"] = "Lesser Jeweller's Orb",
+            ["currencyrerollsocketnumbers02"] = "Greater Jeweller's Orb",
+            ["currencyrerollsocketnumbers03"] = "Perfect Jeweller's Orb",
+
+            // Shards.
+            ["currencyupgradetomagicshard"] = "Transmutation Shard",
+            ["currencyupgrademagictorareshard"] = "Regal Shard",
+            ["currencyaddequipmentsocketshard"] = "Artificer's Shard",
+            ["currencyupgradetouniqueshard"] = "Chance Shard",
+
+            // Tiered currency variants: the item metadata carries a "2"/"3" suffix that the icon
+            // art (shared with the base orb) does not, so they fall through to no price. Suffix
+            // 2 = Greater, 3 = Perfect.
+            ["currencyupgradetomagic2"] = "Greater Orb of Transmutation",
+            ["currencyupgradetomagic3"] = "Perfect Orb of Transmutation",
+            ["currencyaddmodtomagic2"] = "Greater Orb of Augmentation",
+            ["currencyaddmodtomagic3"] = "Perfect Orb of Augmentation",
+            ["currencyupgradetorare2"] = "Greater Orb of Alchemy",
+            ["currencyupgradetorare3"] = "Perfect Orb of Alchemy",
+            ["currencyupgrademagictorare2"] = "Greater Regal Orb",
+            ["currencyupgrademagictorare3"] = "Perfect Regal Orb",
+            ["currencyaddmodtorare2"] = "Greater Exalted Orb",
+            ["currencyaddmodtorare3"] = "Perfect Exalted Orb",
+            ["currencyrerollrare2"] = "Greater Chaos Orb",
+            ["currencyrerollrare3"] = "Perfect Chaos Orb",
+
+            // Annulment removes a mod; its metadata is CurrencyRemoveMod (art "AnnullOrb").
+            ["currencyremovemod"] = "Orb of Annulment",
+
+            // Common Greater runes whose metadata base name differs from poe.ninja's art name.
+            ["runecoldgreater"] = "Greater Glacial Rune",
+            ["runeward1greater"] = "Greater Ward Rune",
         };
 
         private static readonly HttpClient Http = CreateHttpClient();
@@ -113,6 +173,7 @@ namespace StashValue
         private static DateTime lastFetchTime = DateTime.MinValue;
         private static int configuredSource = SourcePoe2Scout;
         private static string configuredLeague = "Runes of Aldur";
+        private static string effectiveLeague = string.Empty;
         private static int configuredRefreshMinutes = 5;
         private static double chaosPerDivine = 12.0;
         private static double chaosPerExalted = 0.1;
@@ -334,6 +395,9 @@ namespace StashValue
                 if (string.IsNullOrWhiteSpace(basename)) return;
                 if (TryResolveDisplayNameCore(basename, out var mapped))
                     add(mapped);
+                var derived = DeriveDynamicName(basename);
+                if (derived != null)
+                    add(derived);
                 add(basename);
             }
 
@@ -348,6 +412,24 @@ namespace StashValue
 
             add(itemName);
             return candidates;
+        }
+
+        /// <summary>
+        ///     Derives a display name for items whose metadata base name encodes a value that
+        ///     varies (so it cannot live in a static map). Currently uncut gems:
+        ///     "SkillGemUncut18" -> "Uncut Skill Gem (Level 18)".
+        /// </summary>
+        private static string? DeriveDynamicName(string basename)
+        {
+            var m = Regex.Match(basename, @"^(Skill|Support|Spirit)GemUncut(\d+)$", RegexOptions.IgnoreCase);
+            if (m.Success)
+            {
+                var kind = m.Groups[1].Value;
+                kind = char.ToUpperInvariant(kind[0]) + kind[1..].ToLowerInvariant();
+                return $"Uncut {kind} Gem (Level {m.Groups[2].Value})";
+            }
+
+            return null;
         }
 
         private static PoeNinjaPrice? LookupPrice(string itemName, IReadOnlyList<string>? mods)
@@ -533,32 +615,93 @@ namespace StashValue
             Task.Run(FetchPricesAsync);
         }
 
+        /// <summary>The league name to use in API calls — the canonical poe2scout spelling.</summary>
+        private static string EffectiveLeague() =>
+            string.IsNullOrWhiteSpace(effectiveLeague) ? configuredLeague : effectiveLeague;
+
+        /// <summary>
+        ///     Resolves the configured league to poe2scout's canonical spelling, tolerating
+        ///     spacing/casing typos (e.g. "runesofaldur" -> "Runes of Aldur"). Falls back to the
+        ///     current league, then to the configured value as typed.
+        /// </summary>
+        private static async Task<string> ResolveLeagueNameAsync()
+        {
+            try
+            {
+                var json = await Http.GetStringAsync("https://poe2scout.com/api/poe2/Leagues").ConfigureAwait(false);
+                var token = JToken.Parse(json);
+                var leagues = token as JArray ?? token["value"] as JArray ?? token["Value"] as JArray;
+                if (leagues == null) return configuredLeague;
+
+                var want = NormalizeKey(configuredLeague);
+                string? current = null;
+                foreach (var league in leagues)
+                {
+                    var val = league["Value"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(val)) continue;
+                    if (NormalizeKey(val) == want) return val;
+                    if (league["IsCurrent"]?.Value<bool?>() == true) current = val;
+                }
+
+                return current ?? configuredLeague;
+            }
+            catch
+            {
+                return configuredLeague;
+            }
+        }
+
         private static async Task FetchPricesAsync()
         {
             try
             {
-                var flat = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                effectiveLeague = await ResolveLeagueNameAsync().ConfigureAwait(false);
+
+                var flatScout = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                var flatNinja = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
                 var uniques = new Dictionary<string, List<UniquePriceListing>>(StringComparer.OrdinalIgnoreCase);
                 var pathNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 double divChaos = chaosPerDivine;
                 double exChaos = chaosPerExalted;
 
-                if (configuredSource == SourcePoe2Scout)
-                {
-                    var rates = await FetchFromScoutAsync(flat, uniques, pathNames, divChaos, exChaos).ConfigureAwait(false);
-                    divChaos = rates.DivChaos;
-                    exChaos = rates.ExChaos;
+                // Fetch BOTH sources, each into its OWN price table. poe.ninja has broader
+                // currency/fragment coverage; poe2scout has the deeper unique listings. We then
+                // merge with the CONFIGURED source as the authority: it overwrites shared items so
+                // its numbers match its website exactly, while the other source only fills the gaps
+                // it is missing (and poe2scout always supplies the unique listings).
+                var sr = await FetchFromScoutAsync(flatScout, uniques, pathNames, divChaos, exChaos).ConfigureAwait(false);
+                divChaos = sr.DivChaos;
+                exChaos = sr.ExChaos;
 
-                    var ninjaStashRates = await FetchNinjaStashOverviewsAsync(flat, pathNames, divChaos, exChaos).ConfigureAwait(false);
-                    divChaos = ninjaStashRates.DivChaos;
-                    exChaos = ninjaStashRates.ExChaos;
-                }
-                else
+                var nr = await FetchFromNinjaAsync(flatNinja, pathNames, divChaos, exChaos).ConfigureAwait(false);
+                divChaos = nr.DivChaos;
+                exChaos = nr.ExChaos;
+
+                // poe.ninja's exchange values arrive in DIVINE and were converted to chaos with a
+                // rate that may differ from poe.ninja's own (we'd seeded it from poe2scout). Re-base
+                // each source so its Chaos Orb is exactly 1.0 — that makes every price self-consistent
+                // in chaos and identical to that source's website, regardless of the seed rate.
+                NormalizeToChaos(flatScout);
+                NormalizeToChaos(flatNinja);
+
+                var primaryFlat = configuredSource == SourcePoe2Scout ? flatScout : flatNinja;
+                var secondaryFlat = configuredSource == SourcePoe2Scout ? flatNinja : flatScout;
+
+                var flat = new Dictionary<string, double>(secondaryFlat, StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in primaryFlat)
                 {
-                    var rates = await FetchFromNinjaAsync(flat, pathNames, divChaos, exChaos).ConfigureAwait(false);
-                    divChaos = rates.DivChaos;
-                    exChaos = rates.ExChaos;
+                    flat[kv.Key] = kv.Value; // primary source wins on shared items
                 }
+
+                // Authoritative rates: every flat price is already in chaos, so the chaos value of
+                // Divine/Exalted Orb IS the conversion rate. This avoids the fragile name-matching
+                // rate logic that mixed the two sources' primary currencies (it had Exalted costing
+                // more than Divine). Greater/Perfect variants have their own keys, so this base key
+                // is the real single-orb rate.
+                if (flat.TryGetValue("divineorb", out var divRate) && divRate > 0)
+                    divChaos = divRate;
+                if (flat.TryGetValue("exaltedorb", out var exRate) && exRate > 0)
+                    exChaos = exRate;
 
                 lock (Gate)
                 {
@@ -598,7 +741,7 @@ namespace StashValue
             double divChaos,
             double exChaos)
         {
-            var league = Uri.EscapeDataString(configuredLeague);
+            var league = Uri.EscapeDataString(EffectiveLeague());
             var rates = await UpdateScoutRatesAsync(league, divChaos, exChaos).ConfigureAwait(false);
             divChaos = rates.DivChaos;
             exChaos = rates.ExChaos;
@@ -621,13 +764,13 @@ namespace StashValue
             try
             {
                 var json = await Http.GetStringAsync("https://poe2scout.com/api/poe2/Leagues").ConfigureAwait(false);
-                var root = JObject.Parse(json);
-                var leagues = root["value"] as JArray ?? root["Value"] as JArray;
+                var token = JToken.Parse(json);
+                var leagues = token as JArray ?? token["value"] as JArray ?? token["Value"] as JArray;
                 if (leagues == null) return new RatePair(divChaos, exChaos);
 
                 foreach (var league in leagues)
                 {
-                    if (!string.Equals(league["Value"]?.ToString(), configuredLeague, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(league["Value"]?.ToString(), EffectiveLeague(), StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     var chaosDiv = league["ChaosDivinePrice"]?.Value<double?>() ?? 0;
@@ -776,6 +919,25 @@ namespace StashValue
             return dot > 0 ? file[..dot] : file;
         }
 
+        /// <summary>
+        ///     Re-scales a per-source chaos table so its Chaos Orb is exactly 1.0. Each price is
+        ///     already relative to chaos within a source, so dividing by the source's own Chaos Orb
+        ///     value yields true chaos values independent of whatever seed divine rate was used.
+        /// </summary>
+        private static void NormalizeToChaos(Dictionary<string, double> flat)
+        {
+            if (!flat.TryGetValue("chaosorb", out var chaos) || chaos <= 0 || Math.Abs(chaos - 1.0) < 0.0001)
+            {
+                return;
+            }
+
+            var scale = 1.0 / chaos;
+            foreach (var key in flat.Keys.ToList())
+            {
+                flat[key] *= scale;
+            }
+        }
+
         private static void AddFlatPrice(Dictionary<string, double> flat, string? key, double price)
         {
             if (string.IsNullOrWhiteSpace(key) || price <= 0) return;
@@ -808,7 +970,7 @@ namespace StashValue
 
         private static async Task<RatePair> FetchFromNinjaAsync(Dictionary<string, double> flat, Dictionary<string, string> pathNames, double divChaos, double exChaos)
         {
-            var leagueParam = Uri.EscapeDataString(configuredLeague).Replace("%20", "+");
+            var leagueParam = Uri.EscapeDataString(EffectiveLeague()).Replace("%20", "+");
 
             foreach (var type in NinjaExchangeTypes)
             {
@@ -827,7 +989,7 @@ namespace StashValue
             double divChaos,
             double exChaos)
         {
-            var leagueParam = Uri.EscapeDataString(configuredLeague).Replace("%20", "+");
+            var leagueParam = Uri.EscapeDataString(EffectiveLeague()).Replace("%20", "+");
 
             foreach (var type in NinjaStashTypes)
             {

@@ -34,12 +34,13 @@ namespace StashValue
 
         private readonly struct CachedSlot
         {
-            public CachedSlot(Vector2 pos, Vector2 size, ItemPanel panel, string text)
+            public CachedSlot(Vector2 pos, Vector2 size, ItemPanel panel, string text, string debug)
             {
                 this.Pos = pos;
                 this.Size = size;
                 this.Panel = panel;
                 this.Text = text;
+                this.Debug = debug;
             }
 
             public Vector2 Pos { get; }
@@ -49,6 +50,8 @@ namespace StashValue
             public ItemPanel Panel { get; }
 
             public string Text { get; }
+
+            public string Debug { get; }
         }
 
         /// <inheritdoc />
@@ -237,7 +240,14 @@ namespace StashValue
 
                 if (this.Settings.ShowDebugInfo)
                 {
-                    fg.AddRect(slot.Pos, slot.Pos + slot.Size, 0xFFFF00FFu, 0f, ImDrawFlags.None, 2f);
+                    var boxColor = slot.Panel == ItemPanel.Left ? 0xFF00FF00u : 0xFFFF00FFu;
+                    fg.AddRect(slot.Pos, slot.Pos + slot.Size, boxColor, 0f, ImDrawFlags.None, 2f);
+                    if (!string.IsNullOrEmpty(slot.Debug))
+                    {
+                        var dbgSize = fontSize * 0.7f;
+                        fg.AddText(font, dbgSize, slot.Pos + new Vector2(1f, 1f), 0xFF000000u, slot.Debug);
+                        fg.AddText(font, dbgSize, slot.Pos, 0xFF00FFFFu, slot.Debug);
+                    }
                 }
 
                 if (!drawPrices || hideOnHover || string.IsNullOrEmpty(slot.Text))
@@ -269,7 +279,9 @@ namespace StashValue
             foreach (var slot in slots)
             {
                 var text = this.TryPriceItem(slot.Item, out var valueText) ? valueText : string.Empty;
-                this.cachedSlots.Add(new CachedSlot(slot.Position, slot.Size, slot.Panel, text));
+                var path = slot.Item.Path ?? string.Empty;
+                var debug = path.Contains('/') ? path[(path.LastIndexOf('/') + 1)..] : path;
+                this.cachedSlots.Add(new CachedSlot(slot.Position, slot.Size, slot.Panel, text, debug));
             }
         }
 
@@ -285,10 +297,12 @@ namespace StashValue
 
             var internalName = fullItemPath.Contains('/') ? fullItemPath[(fullItemPath.LastIndexOf('/') + 1)..] : fullItemPath;
 
-            // No base-name/art component on this host fork: rely on the fetcher's
-            // path-segment resolution (works for currency/fragments/runes/gems) plus
-            // mod-matching for uniques.
-            var price = PoeNinjaPriceFetcher.GetPrice(internalName, item.ModLines, internalName, fullItemPath);
+            // Prefer the item's REAL localized display name (resolved host-side from the game's
+            // BaseItemTypes table) — it matches the price sites directly, so currencies, runes,
+            // gems, fragments etc. all resolve without per-item metadata mapping. Fall back to the
+            // metadata base name + path-segment resolution for anything the table didn't cover.
+            var displayName = item.DisplayName ?? string.Empty;
+            var price = PoeNinjaPriceFetcher.GetPrice(internalName, item.ModLines, internalName, fullItemPath, scoutText: displayName);
             if (price == null)
             {
                 return false;

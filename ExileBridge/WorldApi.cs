@@ -111,6 +111,22 @@ namespace ExileBridge
         bool IsStrongbox { get; }
     }
 
+    /// <summary>
+    ///     A dropped item lying on the ground (the wrapped item inside a "WorldItem" entity).
+    ///     Present only on ground-item entities; use it to identify/filter loot.
+    /// </summary>
+    public interface IGroundItem : IComponent
+    {
+        /// <summary>Gets the wrapped item's metadata path (e.g. <c>Metadata/Items/Currency/...</c>).</summary>
+        string ItemPath { get; }
+
+        /// <summary>Gets the wrapped item's rarity.</summary>
+        Rarity Rarity { get; }
+
+        /// <summary>Gets the wrapped item's stack size (1 for non-stackable).</summary>
+        int StackCount { get; }
+    }
+
     /// <summary>Minimap icon component.</summary>
     public interface IMinimapIcon : IComponent
     {

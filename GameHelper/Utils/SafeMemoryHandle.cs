@@ -303,7 +303,7 @@ namespace GameHelper.Utils
                 var ret = Encoding.Unicode.GetString(buffer);
                 buffer = BitConverter.GetBytes(nativecontainer.ReservedBytes.ToInt64());
                 ret += Encoding.Unicode.GetString(buffer);
-                if (nativecontainer.Length < ret.Length)
+                if (nativecontainer.Length <= ret.Length)
                 {
                     return ret[..nativecontainer.Length];
                 }

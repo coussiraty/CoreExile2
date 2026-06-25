@@ -26,6 +26,14 @@ namespace ExileBridge
         /// <summary>Gets the metadata path (e.g. <c>Metadata/Items/Currency/CurrencyChaosOrb</c>).</summary>
         string Path { get; }
 
+        /// <summary>
+        ///     Gets the item's localized display name resolved from the game's own BaseItemTypes
+        ///     table (e.g. "Greater Exalted Orb", "Greater Glacial Rune") — the name price sites key
+        ///     on. Empty when the table has not been read yet or the base type is unknown; callers
+        ///     should fall back to <see cref="Path" />.
+        /// </summary>
+        string DisplayName { get; }
+
         /// <summary>Gets the item rarity.</summary>
         Rarity Rarity { get; }
 

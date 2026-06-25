@@ -36,6 +36,7 @@ namespace GameHelper.RemoteObjects.UiElement
         private Vector2 relativePosition;
         private Vector2 unScaledSize; // Size before applying the scale multiplier.
         private IntPtr parentAddress;
+        private GameOffsets.Natives.StdWString stringIdContainer;
         private readonly UiElementParents parents;
         protected Vector4 backgroundColor;
 
@@ -97,6 +98,13 @@ namespace GameHelper.RemoteObjects.UiElement
                 return size;
             }
         }
+
+        /// <summary>
+        ///     Gets the element's StringId (a stable string identifier the game assigns to
+        ///     many UI elements, e.g. panels/grids). Read lazily; empty when the element has none.
+        /// </summary>
+        public string StringId =>
+            Core.Process.Handle.ReadStdWString(this.stringIdContainer, logOnError: false);
 
         /// <summary>
         ///     Gets a value indicating whether the Ui Element is visible or not.
@@ -285,6 +293,7 @@ namespace GameHelper.RemoteObjects.UiElement
 
             this.unScaledSize.X = data.UnscaledSize.X;
             this.unScaledSize.Y = data.UnscaledSize.Y;
+            this.stringIdContainer = data.StringIdPtr;
 
             this.backgroundColor = ImGuiHelper.Color(data.BackgroundColor);
         }

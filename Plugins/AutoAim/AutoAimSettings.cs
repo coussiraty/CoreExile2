@@ -313,6 +313,63 @@ namespace AutoAim
         /// <summary>Chest interaction cooldown (seconds).</summary>
         public float ChestCooldown = 0.5f;
 
+        // Auto-Pickup
+
+        /// <summary>Whether auto item pickup is enabled.</summary>
+        public bool EnableAutoPickup;
+
+        /// <summary>Pickup detection range (grid units).</summary>
+        public float PickupRange = 50f;
+
+        /// <summary>Cooldown (seconds) between pickup clicks.</summary>
+        public float PickupCooldown = 0.35f;
+
+        /// <summary>Whether the pickup range circle is drawn.</summary>
+        public bool ShowPickupRange;
+
+        // Pickup category filters (matched against the item's metadata path).
+
+        /// <summary>Pick up all currency (path contains <c>Items/Currency</c>).</summary>
+        public bool PickupAllCurrency = true;
+
+        /// <summary>Pick up all maps / waystones.</summary>
+        public bool PickupMaps = true;
+
+        /// <summary>Pick up skill / support gems.</summary>
+        public bool PickupGems;
+
+        /// <summary>Pick up runes / soul cores.</summary>
+        public bool PickupSoulCores;
+
+        /// <summary>Pick up jewels.</summary>
+        public bool PickupJewels;
+
+        /// <summary>Pick up quest items.</summary>
+        public bool PickupQuestItems = true;
+
+        // Pickup rarity filters.
+
+        /// <summary>Pick up Unique items.</summary>
+        public bool PickupUniques = true;
+
+        /// <summary>Pick up Rare items.</summary>
+        public bool PickupRares;
+
+        /// <summary>Pick up Magic items.</summary>
+        public bool PickupMagic;
+
+        /// <summary>Pick up Normal items.</summary>
+        public bool PickupNormal;
+
+        /// <summary>
+        ///     Path substrings to ALWAYS pick up (case-insensitive). Use this to select
+        ///     specific currencies/items, e.g. "DivineOrb", "MirrorOfKalandra".
+        /// </summary>
+        public List<string> PickupIncludeFilters { get; set; } = new();
+
+        /// <summary>Path substrings to NEVER pick up (overrides everything else).</summary>
+        public List<string> PickupExcludeFilters { get; set; } = new();
+
         // Combo system
 
         /// <summary>Whether the combo system is enabled.</summary>

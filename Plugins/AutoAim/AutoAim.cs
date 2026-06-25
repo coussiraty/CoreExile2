@@ -105,6 +105,32 @@ namespace AutoAim
         private DateTime lastChestInteraction = DateTime.MinValue;
         private IEntity targetedChest;
 
+        private DateTime lastPickupTime = DateTime.MinValue;
+        private IEntity targetedItem;
+        private string pickupIncludeBuffer = string.Empty;
+        private string pickupExcludeBuffer = string.Empty;
+        private string pickupSearchBuffer = string.Empty;
+
+        // Distinct item-path basenames seen on the ground this session, so the Pickup tab can
+        // offer a "click to pick" checklist instead of making the user type metadata paths.
+        private readonly SortedSet<string> seenItemBasenames = new(StringComparer.OrdinalIgnoreCase);
+
+        // Friendly display names for the common PoE2 currencies whose internal path names are
+        // non-obvious (e.g. CurrencyRerollRare == Chaos Orb). Others fall back to a derived label.
+        private static readonly Dictionary<string, string> CurrencyDisplayNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["CurrencyUpgradeToMagic"] = "Orb of Transmutation",
+            ["CurrencyAddModToMagic"] = "Orb of Augmentation",
+            ["CurrencyUpgradeToRare"] = "Orb of Alchemy",
+            ["CurrencyUpgradeMagicToRare"] = "Regal Orb",
+            ["CurrencyAddModToRare"] = "Exalted Orb",
+            ["CurrencyRerollRare"] = "Chaos Orb",
+            ["CurrencyCorrupt"] = "Vaal Orb",
+            ["CurrencyWeaponQuality"] = "Blacksmith's Whetstone",
+            ["CurrencyArmourQuality"] = "Armourer's Scrap",
+            ["CurrencyGemQuality"] = "Artificer's Orb",
+        };
+
         private readonly Dictionary<string, bool> isCapturingKey = new();
         private readonly Dictionary<string, string> keyBindingLabels = new();
         private readonly Dictionary<string, KeyCombination> keyCombinations = new();
@@ -336,6 +362,7 @@ namespace AutoAim
             var game = this.Ctx.Game.InGame;
             this.terrain = game.Terrain;
             this.awakeEntities = this.Ctx.Entities.Awake;
+            this.RecordSeenItems();
             var player = game.Player;
 
             if (player == null || !player.TryGetComponent<IRender>(out var playerRender))
@@ -387,6 +414,229 @@ namespace AutoAim
             }
 
             this.HandleAutoChest(playerPos);
+            this.HandlePickup(playerPos);
+        }
+
+        // ====================================================================
+        //  Auto-Pickup
+        // ====================================================================
+        private void HandlePickup(Vector2 playerPos)
+        {
+            if (!this.Settings.EnableAutoPickup)
+            {
+                return;
+            }
+
+            // Don't fight the aiming cursor: only pick up when not actively targeting a monster.
+            if (this.targetedMonster != null)
+            {
+                this.targetedItem = null;
+                return;
+            }
+
+            if ((DateTime.Now - this.lastPickupTime).TotalSeconds < this.Settings.PickupCooldown)
+            {
+                return;
+            }
+
+            if (this.targetedItem != null && !this.IsPickableItem(this.targetedItem))
+            {
+                this.targetedItem = null;
+            }
+
+            this.targetedItem ??= this.FindBestItem(playerPos);
+            if (this.targetedItem != null)
+            {
+                this.PickupItem(this.targetedItem);
+            }
+        }
+
+        private IEntity FindBestItem(Vector2 playerPos)
+        {
+            IEntity best = null;
+            var bestDist = float.MaxValue;
+            foreach (var entity in this.awakeEntities)
+            {
+                if (!this.IsPickableItem(entity) || !entity.TryGetComponent<IRender>(out var render))
+                {
+                    continue;
+                }
+
+                var dist = Vector2.Distance(playerPos, render.GridPosition);
+                if (dist <= this.Settings.PickupRange && dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = entity;
+                }
+            }
+
+            return best;
+        }
+
+        private bool IsPickableItem(IEntity entity)
+        {
+            if (entity == null || !entity.IsValid || entity.Type != EntityType.Item ||
+                entity.State == EntityState.Useless)
+            {
+                return false;
+            }
+
+            // A still-targetable label means it hasn't been picked up yet.
+            if (entity.TryGetComponent<ITargetable>(out var targetable) && targetable.IsHidden)
+            {
+                return false;
+            }
+
+            return this.PassesPickupFilter(entity);
+        }
+
+        private bool PassesPickupFilter(IEntity item)
+        {
+            if (!item.TryGetComponent<IGroundItem>(out var ground))
+            {
+                return false;
+            }
+
+            var path = ground.ItemPath ?? string.Empty;
+            if (path.Length == 0)
+            {
+                return false;
+            }
+
+            // Exclude wins over everything.
+            foreach (var ex in this.Settings.PickupExcludeFilters)
+            {
+                if (!string.IsNullOrWhiteSpace(ex) && path.Contains(ex, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            // Explicit include list always picks (use it to select specific currencies/items).
+            foreach (var inc in this.Settings.PickupIncludeFilters)
+            {
+                if (!string.IsNullOrWhiteSpace(inc) && path.Contains(inc, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            // Category toggles (matched against the metadata path).
+            if (this.Settings.PickupAllCurrency && path.Contains("Items/Currency", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (this.Settings.PickupMaps &&
+                (path.Contains("/Maps/", StringComparison.OrdinalIgnoreCase) ||
+                 path.Contains("Waystone", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
+            if (this.Settings.PickupGems && path.Contains("/Gems/", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (this.Settings.PickupSoulCores &&
+                (path.Contains("/SoulCores/", StringComparison.OrdinalIgnoreCase) ||
+                 path.Contains("Rune", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
+            if (this.Settings.PickupJewels && path.Contains("/Jewels/", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (this.Settings.PickupQuestItems && path.Contains("/QuestItems/", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // Rarity toggles.
+            switch (ground.Rarity)
+            {
+                case Rarity.Unique when this.Settings.PickupUniques:
+                case Rarity.Rare when this.Settings.PickupRares:
+                case Rarity.Magic when this.Settings.PickupMagic:
+                case Rarity.Normal when this.Settings.PickupNormal:
+                    return true;
+            }
+
+            return false;
+        }
+
+        private void PickupItem(IEntity item)
+        {
+            if (!item.TryGetComponent<IRender>(out _))
+            {
+                return;
+            }
+
+            this.MoveMouseToEntity(item);
+            this.ExecuteMouseClick(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
+            this.lastPickupTime = DateTime.Now;
+            this.targetedItem = null;
+        }
+
+        private void RecordSeenItems()
+        {
+            if (this.seenItemBasenames.Count > 1500)
+            {
+                return;
+            }
+
+            foreach (var e in this.awakeEntities)
+            {
+                if (e == null || !e.IsValid || e.Type != EntityType.Item ||
+                    !e.TryGetComponent<IGroundItem>(out var ground))
+                {
+                    continue;
+                }
+
+                var basename = BasenameOf(ground.ItemPath);
+                if (basename.Length > 0)
+                {
+                    this.seenItemBasenames.Add(basename);
+                }
+            }
+        }
+
+        private static string BasenameOf(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return string.Empty;
+            }
+
+            var idx = path.LastIndexOf('/');
+            return idx >= 0 && idx < path.Length - 1 ? path[(idx + 1)..] : path;
+        }
+
+        private static string PrettyItemName(string basename)
+        {
+            if (CurrencyDisplayNames.TryGetValue(basename, out var nice))
+            {
+                return nice;
+            }
+
+            // Insert spaces at camelCase boundaries so "CurrencyRerollRare" -> "Currency Reroll Rare".
+            var result = string.Empty;
+            for (var i = 0; i < basename.Length; i++)
+            {
+                var c = basename[i];
+                if (i > 0 && char.IsUpper(c) && !char.IsUpper(basename[i - 1]))
+                {
+                    result += " ";
+                }
+
+                result += c;
+            }
+
+            return result;
         }
 
         // ====================================================================
@@ -1531,6 +1781,7 @@ namespace AutoAim
                     (this.Settings.EnableAutoSkill && this.Settings.ShowAutoSkillRange) ||
                     (this.Settings.EnableCullingStrike && this.Settings.ShowCullingStrikeRange) ||
                     (this.Settings.EnableAutoChest && (this.Settings.ShowChestRange || this.Settings.ShowSafetyRange)) ||
+                    (this.Settings.EnableAutoPickup && this.Settings.ShowPickupRange) ||
                     this.Settings.ShowTargetLines)
                 {
                     this.DrawRangeCircles(player, playerPos);
@@ -1597,6 +1848,11 @@ namespace AutoAim
             if (this.Settings.EnableAutoChest && this.Settings.ShowSafetyRange && this.Settings.OnlyOpenWhenSafe)
             {
                 drawList.AddCircle(playerScreen, RadiusFor(this.Settings.SafetyCheckRange), Draw.Color(new Vector4(1f, 0.4f, 0f, 0.6f)), 64, 1.5f);
+            }
+
+            if (this.Settings.EnableAutoPickup && this.Settings.ShowPickupRange)
+            {
+                drawList.AddCircle(playerScreen, RadiusFor(this.Settings.PickupRange), Draw.Color(new Vector4(0.2f, 0.8f, 1f, 0.7f)), 48, 2.0f);
             }
 
             drawList.AddCircleFilled(playerScreen, 6.0f, Draw.Color(new Vector4(1f, 1f, 0f, 1f)));
@@ -1786,6 +2042,12 @@ namespace AutoAim
                 ImGui.EndTabItem();
             }
 
+            if (ImGui.BeginTabItem("Pickup"))
+            {
+                this.DrawPickupTab();
+                ImGui.EndTabItem();
+            }
+
             if (ImGui.BeginTabItem("Advanced"))
             {
                 ImGui.SliderFloat("Mouse Speed", ref this.Settings.MouseSpeed, 0.1f, 5.0f);
@@ -1813,6 +2075,123 @@ namespace AutoAim
             }
 
             ImGui.EndTabBar();
+        }
+
+        private void DrawPickupTab()
+        {
+            ImGui.Checkbox("Enable Auto-Pickup", ref this.Settings.EnableAutoPickup);
+            Draw.ToolTip("Clicks to pick up matching ground items while not actively aiming at a monster.");
+            if (!this.Settings.EnableAutoPickup)
+            {
+                return;
+            }
+
+            ImGui.Separator();
+            ImGui.SliderFloat("Pickup Range", ref this.Settings.PickupRange, 10f, 150f);
+            ImGui.SliderFloat("Pickup Cooldown (s)", ref this.Settings.PickupCooldown, 0.1f, 2.0f);
+            ImGui.Checkbox("Show Pickup Range Circle", ref this.Settings.ShowPickupRange);
+
+            ImGui.Separator();
+            ImGui.Text("Categories:");
+            ImGui.Checkbox("All Currency", ref this.Settings.PickupAllCurrency);
+            ImGui.SameLine();
+            ImGui.Checkbox("Maps / Waystones", ref this.Settings.PickupMaps);
+            ImGui.Checkbox("Gems", ref this.Settings.PickupGems);
+            ImGui.SameLine();
+            ImGui.Checkbox("Soul Cores / Runes", ref this.Settings.PickupSoulCores);
+            ImGui.Checkbox("Jewels", ref this.Settings.PickupJewels);
+            ImGui.SameLine();
+            ImGui.Checkbox("Quest Items", ref this.Settings.PickupQuestItems);
+
+            ImGui.Separator();
+            ImGui.Text("By rarity:");
+            ImGui.Checkbox("Unique", ref this.Settings.PickupUniques);
+            ImGui.SameLine();
+            ImGui.Checkbox("Rare", ref this.Settings.PickupRares);
+            ImGui.SameLine();
+            ImGui.Checkbox("Magic", ref this.Settings.PickupMagic);
+            ImGui.SameLine();
+            ImGui.Checkbox("Normal", ref this.Settings.PickupNormal);
+
+            ImGui.Separator();
+            ImGui.Text("Always pick (path contains) — select specific currencies/items:");
+            DrawFilterListEditor("inc", ref this.pickupIncludeBuffer, this.Settings.PickupIncludeFilters);
+
+            ImGui.Separator();
+            ImGui.Text("Never pick (path contains):");
+            DrawFilterListEditor("exc", ref this.pickupExcludeBuffer, this.Settings.PickupExcludeFilters);
+
+            ImGui.Separator();
+            ImGui.Text($"Detected on the ground ({this.seenItemBasenames.Count}) — check to pick up:");
+            ImGui.SetNextItemWidth(220f);
+            ImGui.InputText("Search##pickupsearch", ref this.pickupSearchBuffer, 32);
+            ImGui.SameLine();
+            if (ImGui.Button("Clear list"))
+            {
+                this.seenItemBasenames.Clear();
+            }
+
+            ImGui.BeginChild("detectedItems", new Vector2(0f, 200f));
+            foreach (var bn in this.seenItemBasenames)
+            {
+                var pretty = PrettyItemName(bn);
+                if (!string.IsNullOrEmpty(this.pickupSearchBuffer) &&
+                    bn.IndexOf(this.pickupSearchBuffer, StringComparison.OrdinalIgnoreCase) < 0 &&
+                    pretty.IndexOf(this.pickupSearchBuffer, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                var selected = this.Settings.PickupIncludeFilters.Contains(bn);
+                if (ImGui.Checkbox($"{pretty}##{bn}", ref selected))
+                {
+                    if (selected)
+                    {
+                        if (!this.Settings.PickupIncludeFilters.Contains(bn))
+                        {
+                            this.Settings.PickupIncludeFilters.Add(bn);
+                        }
+                    }
+                    else
+                    {
+                        this.Settings.PickupIncludeFilters.Remove(bn);
+                    }
+                }
+
+                if (ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip(bn);
+                }
+            }
+
+            ImGui.EndChild();
+
+            ImGui.TextDisabled("The list fills as items drop near you. Hover an entry to see its raw path.");
+        }
+
+        private static void DrawFilterListEditor(string id, ref string buffer, List<string> list)
+        {
+            ImGui.SetNextItemWidth(220f);
+            ImGui.InputText($"##{id}buf", ref buffer, 64);
+            ImGui.SameLine();
+            if (ImGui.Button($"Add##{id}") && !string.IsNullOrWhiteSpace(buffer))
+            {
+                list.Add(buffer.Trim());
+                buffer = string.Empty;
+            }
+
+            for (var i = 0; i < list.Count; i++)
+            {
+                if (ImGui.Button($"X##{id}{i}"))
+                {
+                    list.RemoveAt(i);
+                    i--;
+                    continue;
+                }
+
+                ImGui.SameLine();
+                ImGui.TextUnformatted(list[i]);
+            }
         }
 
         private void DrawAutoSkillTab()

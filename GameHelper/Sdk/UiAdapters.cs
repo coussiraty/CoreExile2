@@ -18,6 +18,9 @@ namespace GameHelper.Sdk
 
         internal UiElementAdapter(HostUiElement element) => this.element = element;
 
+        /// <summary>Gets the wrapped host element (host-side traversal helper).</summary>
+        internal HostUiElement Element => this.element;
+
         /// <inheritdoc />
         public nint Address => this.element.Address;
 
@@ -32,6 +35,9 @@ namespace GameHelper.Sdk
 
         /// <inheritdoc />
         public System.Numerics.Vector2 Size => this.element.Size;
+
+        /// <inheritdoc />
+        public string StringId => this.element.StringId;
 
         /// <inheritdoc />
         public int ChildCount => this.element.TotalChildrens;

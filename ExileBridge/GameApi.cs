@@ -500,6 +500,17 @@ namespace ExileBridge
         /// </summary>
         /// <returns>the visible item slots (left = stash, right = inventory).</returns>
         IReadOnlyList<IItemSlot> EnumerateOpenItemSlots();
+
+        /// <summary>
+        ///     Finds the first visible descendant whose <see cref="IUiElement.StringId" /> equals
+        ///     <paramref name="stringId" />. Searches under <paramref name="root" />, or the whole
+        ///     in-game UI tree when <paramref name="root" /> is null. A robust, layout-independent
+        ///     way to locate a known panel/grid (e.g. the inventory or stash item grid).
+        /// </summary>
+        /// <param name="stringId">the target StringId (case-insensitive).</param>
+        /// <param name="root">optional subtree root; null searches the whole UI.</param>
+        /// <returns>the matching element, or null if not found.</returns>
+        IUiElement? FindElementByStringId(string stringId, IUiElement? root = null);
     }
 
     /// <summary>Projects world/grid coordinates to screen space.</summary>

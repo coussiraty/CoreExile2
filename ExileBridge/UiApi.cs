@@ -47,6 +47,13 @@ namespace ExileBridge
         /// <summary>Gets the element's size in pixels.</summary>
         Vector2 Size { get; }
 
+        /// <summary>
+        ///     Gets the element's StringId — a stable string identifier the game assigns to
+        ///     many panels/containers (e.g. the inventory or stash grid). Empty when none.
+        ///     Far more robust than positional/offset heuristics for locating a known panel.
+        /// </summary>
+        string StringId { get; }
+
         /// <summary>Gets the number of child elements.</summary>
         int ChildCount { get; }
 

@@ -23,9 +23,10 @@ namespace GameHelper.Sdk
     /// <summary>SDK view of an item in an open stash/inventory slot.</summary>
     internal sealed class InventoryItemAdapter : IInventoryItem
     {
-        internal InventoryItemAdapter(string path, Rarity rarity, int stackCount, IReadOnlyList<string> modLines)
+        internal InventoryItemAdapter(string path, string displayName, Rarity rarity, int stackCount, IReadOnlyList<string> modLines)
         {
             this.Path = path;
+            this.DisplayName = displayName;
             this.Rarity = rarity;
             this.StackCount = stackCount;
             this.ModLines = modLines;
@@ -33,6 +34,9 @@ namespace GameHelper.Sdk
 
         /// <inheritdoc />
         public string Path { get; }
+
+        /// <inheritdoc />
+        public string DisplayName { get; }
 
         /// <inheritdoc />
         public Rarity Rarity { get; }
@@ -86,6 +90,7 @@ namespace GameHelper.Sdk
         // so we must never hand it one.
         private const int SelfPtrOffset = 0x08;
         private const int ChildrenVecOffset = 0x10;
+        private const int ParentPtrOffset = 0xB8;
         private const int FlagsOffset = 0x180;
 
         // Bound the per-frame UI tree walk so a corrupt tree cannot hang the overlay.
@@ -98,6 +103,26 @@ namespace GameHelper.Sdk
         internal static bool Diagnostics = false;
 
         private static long lastDiagTick;
+
+        /// <summary>A located item-slot element: its on-screen rect and the item pointer it holds.</summary>
+        private readonly struct Candidate
+        {
+            public Candidate(IntPtr itemPtr, ItemPanel panel, Vector2 pos, Vector2 size)
+            {
+                this.ItemPtr = itemPtr;
+                this.Panel = panel;
+                this.Pos = pos;
+                this.Size = size;
+            }
+
+            public IntPtr ItemPtr { get; }
+
+            public ItemPanel Panel { get; }
+
+            public Vector2 Pos { get; }
+
+            public Vector2 Size { get; }
+        }
 
         internal static IReadOnlyList<IItemSlot> Scan()
         {
@@ -112,83 +137,82 @@ namespace GameHelper.Sdk
 
                 var left = gameUi.LeftPanel;
                 var right = gameUi.RightPanel;
-                var visited = new HashSet<IntPtr>();
-
-                // The same item is often held by more than one UI element (the slot plus an
-                // inner image), which would draw its price twice ("232 ex ex"). Dedup by the
-                // item pointer so each item is priced once.
-                var seenItems = new HashSet<IntPtr>();
-
                 var leftVisible = IsValidUiElement(left);
                 var rightVisible = IsValidUiElement(right);
+
+                // Resolve real localized item names from the game's BaseItemTypes table (once).
+                if (!ItemBaseNames.Built && (leftVisible || rightVisible))
+                {
+                    ItemBaseNames.EnsureBuilt(
+                        left?.Address ?? IntPtr.Zero,
+                        right?.Address ?? IntPtr.Zero,
+                        gameUi.Address);
+                }
+
+                // Pass 1: walk both panels and collect EVERY element that holds a real item
+                // pointer at +0x4F8, paired with that element's own on-screen rect. No dedup yet.
+                var candidates = new List<Candidate>();
+                var visited = new HashSet<IntPtr>();
                 if (leftVisible)
                 {
-                    WalkNode(left, ItemPanel.Left, slots, visited, seenItems, 0);
+                    WalkCollect(left, null, ItemPanel.Left, candidates, visited, 0);
                 }
 
                 if (rightVisible)
                 {
-                    WalkNode(right, ItemPanel.Right, slots, visited, seenItems, 0);
+                    WalkCollect(right, null, ItemPanel.Right, candidates, visited, 0);
                 }
 
-                // Clip each slot to its panel's on-screen rect, counting per-panel hits/misses.
+                // Each item is usually referenced by several UI elements: the visible slot, an
+                // inner image, and — on premium tabs — off-panel "ghost" copies positioned far
+                // off-screen. For each unique item pick the single element whose rect actually
+                // sits inside the panel: that is the real, on-screen slot. Items with no
+                // on-panel element have nowhere valid to draw and are dropped. This replaces
+                // both the double-price dedup AND the old all-or-nothing special-tab suppression.
                 var leftRect = PanelRect(leftVisible ? left : null);
                 var rightRect = PanelRect(rightVisible ? right : null);
-                var keptLeft = new List<IItemSlot>();
-                var keptRight = new List<IItemSlot>();
-                var clipLeft = 0;
-                var clipRight = 0;
-                foreach (var s in slots)
+
+                var best = new Dictionary<IntPtr, Candidate>();
+                foreach (var c in candidates)
                 {
-                    if (s.Panel == ItemPanel.Left)
+                    if (!best.TryGetValue(c.ItemPtr, out var prev))
                     {
-                        if (leftRect == null || WithinRect(s, leftRect.Value.min, leftRect.Value.max))
-                        {
-                            keptLeft.Add(s);
-                        }
-                        else
-                        {
-                            clipLeft++;
-                        }
+                        best[c.ItemPtr] = c;
+                    }
+                    else if (IsOnPanel(c, leftRect, rightRect) && !IsOnPanel(prev, leftRect, rightRect))
+                    {
+                        best[c.ItemPtr] = c;
+                    }
+                }
+
+                var dropped = 0;
+                foreach (var c in best.Values)
+                {
+                    if (!IsOnPanel(c, leftRect, rightRect) || c.Size.X <= 0f || c.Size.Y <= 0f)
+                    {
+                        dropped++;
+                        continue;
+                    }
+
+                    var slot = BuildSlot(c);
+                    if (slot != null)
+                    {
+                        slots.Add(slot);
                     }
                     else
                     {
-                        if (rightRect == null || WithinRect(s, rightRect.Value.min, rightRect.Value.max))
-                        {
-                            keptRight.Add(s);
-                        }
-                        else
-                        {
-                            clipRight++;
-                        }
+                        dropped++;
                     }
                 }
 
-                // Special-tab guard: when most of the left panel's slots land OUTSIDE the panel,
-                // the host is mis-positioning this tab (premium currency/fragment/etc. use a
-                // non-standard layout). Hide the entire left overlay so we never draw a partial /
-                // misplaced mess. Normal grid tabs position correctly (few/no clips) and show.
-                var leftReliable = keptLeft.Count > 0 && keptLeft.Count >= clipLeft;
-
-                var result = new List<IItemSlot>(keptRight.Count + keptLeft.Count);
-                result.AddRange(keptRight);
-                if (leftReliable)
-                {
-                    result.AddRange(keptLeft);
-                }
-
-                slots = result;
-
-                if (Diagnostics)
+                if (Diagnostics && (leftVisible || rightVisible))
                 {
                     var now = Environment.TickCount64;
-                    if ((leftVisible || rightVisible) && now - lastDiagTick > 1000)
+                    if (now - lastDiagTick > 1000)
                     {
                         lastDiagTick = now;
-                        Console.WriteLine($"[StashValue scan] visited={visited.Count} | " +
-                                          $"left: kept={keptLeft.Count} clip={clipLeft} " +
-                                          $"{(leftReliable ? "shown" : "SUPPRESSED(special tab)")} | " +
-                                          $"right: kept={keptRight.Count} clip={clipRight} | shown={slots.Count}");
+                        Console.WriteLine($"[StashValue scan] candidates={candidates.Count} " +
+                                          $"unique={best.Count} shown={slots.Count} dropped={dropped}");
                     }
                 }
             }
@@ -198,6 +222,20 @@ namespace GameHelper.Sdk
             }
 
             return slots;
+        }
+
+        /// <summary>True when the candidate's center lies inside its panel's on-screen rect.</summary>
+        private static bool IsOnPanel(Candidate c, (Vector2 min, Vector2 max)? leftRect, (Vector2 min, Vector2 max)? rightRect)
+        {
+            var rect = c.Panel == ItemPanel.Left ? leftRect : rightRect;
+            if (rect == null)
+            {
+                return false;
+            }
+
+            var center = c.Pos + (c.Size * 0.5f);
+            return center.X >= rect.Value.min.X && center.X <= rect.Value.max.X &&
+                   center.Y >= rect.Value.min.Y && center.Y <= rect.Value.max.Y;
         }
 
         /// <summary>Returns a panel's on-screen rectangle (with a small margin), or null if unreadable.</summary>
@@ -228,20 +266,15 @@ namespace GameHelper.Sdk
             return (pos - margin, pos + size + margin);
         }
 
-        private static bool WithinRect(IItemSlot slot, Vector2 min, Vector2 max)
-        {
-            var center = slot.Position + (slot.Size * 0.5f);
-            return center.X >= min.X && center.X <= max.X && center.Y >= min.Y && center.Y <= max.Y;
-        }
-
         /// <summary>
         ///     Walks <paramref name="node" /> and its visible descendants via the host indexer,
         ///     so each materialized child uses the host's live <c>rootCache</c> for positioning
         ///     (correct, refreshed every tick). Children addresses are validated with raw reads
         ///     first so the indexer is only handed genuine, visible elements. The loop is bounded
         ///     by the fresh children vector so a stale cached child count cannot truncate it.
+        ///     Collects (item pointer + element rect) candidates; dedup/positioning happen later.
         /// </summary>
-        private static void WalkNode(HostUiElement node, ItemPanel panel, List<IItemSlot> slots, HashSet<IntPtr> visited, HashSet<IntPtr> seenItems, int depth)
+        private static void WalkCollect(HostUiElement node, HostUiElement? parent, ItemPanel panel, List<Candidate> candidates, HashSet<IntPtr> visited, int depth)
         {
             if (node == null || node.Address == IntPtr.Zero || depth > MaxDepth ||
                 visited.Count >= MaxVisited || !visited.Add(node.Address))
@@ -249,7 +282,7 @@ namespace GameHelper.Sdk
                 return;
             }
 
-            TryAddSlot(node, panel, slots, seenItems);
+            CollectCandidate(node, parent, panel, candidates);
 
             if (!Core.Process.Handle.TryReadMemory<StdVector>(node.Address + ChildrenVecOffset, out var childVec))
             {
@@ -286,8 +319,59 @@ namespace GameHelper.Sdk
 
                 if (child != null)
                 {
-                    WalkNode(child, panel, slots, visited, seenItems, depth + 1);
+                    WalkCollect(child, node, panel, candidates, visited, depth + 1);
                 }
+            }
+        }
+
+        /// <summary>
+        ///     True only when EVERY ancestor up the parent chain (read raw, not via the
+        ///     rootCache) also has its local visible bit set. An element that belongs to an
+        ///     INACTIVE stash tab still passes the single-level <see cref="IsValidUiElementAddress" />
+        ///     check (its own visible bit stays set), but one of its ancestors — the inactive
+        ///     tab's container — is hidden. Walking the chain rejects those, which is what stops
+        ///     a background currency/fragment tab's slots from drawing on top of the active tab.
+        /// </summary>
+        internal static bool IsChainVisible(IntPtr addr)
+        {
+            try
+            {
+                var handle = Core.Process.Handle;
+                var cur = addr;
+                for (var i = 0; i < 32; i++)
+                {
+                    if (!handle.TryReadMemory<uint>(cur + FlagsOffset, out var flags) ||
+                        !UiElementBaseFuncs.IsVisibleChecker(flags))
+                    {
+                        return false;
+                    }
+
+                    if (!handle.TryReadMemory<IntPtr>(cur + ParentPtrOffset, out var parent))
+                    {
+                        return true;
+                    }
+
+                    var praw = parent.ToInt64();
+                    if (praw <= 0x10000 || praw > 0x7FFFFFFFFFFF)
+                    {
+                        // Reached the top (no further parent): the whole chain checked out.
+                        return true;
+                    }
+
+                    // Stop if the parent isn't a genuine UI element (don't walk garbage).
+                    if (!handle.TryReadMemory<IntPtr>(parent + SelfPtrOffset, out var self) || self != parent)
+                    {
+                        return true;
+                    }
+
+                    cur = parent;
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -318,7 +402,13 @@ namespace GameHelper.Sdk
                    UiElementBaseFuncs.IsVisibleChecker(flags);
         }
 
-        private static void TryAddSlot(HostUiElement el, ItemPanel panel, List<IItemSlot> slots, HashSet<IntPtr> seenItems)
+        /// <summary>
+        ///     If <paramref name="el" /> holds a real item pointer at <c>+0x4F8</c>, records a
+        ///     <see cref="Candidate" /> pairing that item with the element's live rect. No dedup
+        ///     and no host <c>Item</c> construction yet — both happen once per unique item in
+        ///     <see cref="BuildSlot" />, after the on-panel element has been chosen.
+        /// </summary>
+        private static void CollectCandidate(HostUiElement el, HostUiElement? parent, ItemPanel panel, List<Candidate> candidates)
         {
             try
             {
@@ -335,34 +425,68 @@ namespace GameHelper.Sdk
                     return;
                 }
 
-                // Each item only once, even if several UI elements reference it.
-                if (!seenItems.Add(itemPtr))
-                {
-                    return;
-                }
-
-                // ...and that it really is an item. Most UI elements hold some other
-                // readable pointer at 0x4F8; constructing a host Item on one makes its
-                // UpdateData parse a garbage component list. So we first confirm the
-                // metadata path silently.
+                // ...and that it really is an item. Most UI elements hold some other readable
+                // pointer at 0x4F8; constructing a host Item on one makes its UpdateData parse a
+                // garbage component list. So we confirm the metadata path silently first.
                 if (!LooksLikeRealItem(handle, itemPtr))
                 {
                     return;
                 }
 
-                var item = new HostItem(itemPtr);
-                var path = item.Path;
-                if (string.IsNullOrEmpty(path) ||
-                    !path.StartsWith("Metadata/Items", StringComparison.OrdinalIgnoreCase))
+                // Reject slots that belong to an inactive stash tab still cached in the UI tree
+                // (a background currency/fragment tab whose container is hidden). Their own
+                // visible bit is set, so only the full parent-chain walk excludes them.
+                if (!IsChainVisible(el.Address))
                 {
                     return;
                 }
 
+                // The element that physically holds the item pointer can drift away from its
+                // visible slot — premium currency tabs park it in the tab's centre, which made
+                // prices float in empty cells. Its immediate parent IS the cell and is positioned
+                // correctly, so when that parent is cell-sized use ITS rect. A large parent (a
+                // whole grid container) is not a cell, so for normal grid tabs we keep self.
+                var pos = el.Position;
                 var size = el.Size;
-                if (size.X <= 0f || size.Y <= 0f)
+                if (parent != null)
                 {
-                    return;
+                    var psize = parent.Size;
+                    if (psize.X >= 20f && psize.X <= 160f && psize.Y >= 20f && psize.Y <= 160f)
+                    {
+                        pos = parent.Position;
+                        size = psize;
+                    }
                 }
+
+                candidates.Add(new Candidate(itemPtr, panel, pos, size));
+            }
+            catch
+            {
+                // Stale/garbage element: not a slot.
+            }
+        }
+
+        /// <summary>
+        ///     Builds the SDK slot for a chosen on-panel <see cref="Candidate" />: constructs the
+        ///     host item, verifies its metadata path, and pulls rarity / mod lines / stack count.
+        ///     Returns null when the pointer does not resolve to a real item.
+        /// </summary>
+        private static IItemSlot? BuildSlot(Candidate c)
+        {
+            try
+            {
+                var item = new HostItem(c.ItemPtr);
+                var path = item.Path;
+                if (string.IsNullOrEmpty(path) ||
+                    !path.StartsWith("Metadata/Items", StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+
+                // Resolve the real localized display name from the game's BaseItemTypes table.
+                var slash = path.LastIndexOf('/');
+                var baseName = slash >= 0 && slash < path.Length - 1 ? path[(slash + 1)..] : path;
+                var displayName = ItemBaseNames.TryGetName(baseName, out var resolved) ? resolved : string.Empty;
 
                 var rarity = Rarity.Normal;
                 var modLines = new List<string>();
@@ -378,12 +502,12 @@ namespace GameHelper.Sdk
                     ? stackComp.Count
                     : 1;
 
-                var sdkItem = new InventoryItemAdapter(path, rarity, stack, modLines);
-                slots.Add(new ItemSlotAdapter(el.Position, size, panel, sdkItem));
+                var sdkItem = new InventoryItemAdapter(path, displayName, rarity, stack, modLines);
+                return new ItemSlotAdapter(c.Pos, c.Size, c.Panel, sdkItem);
             }
             catch
             {
-                // Stale/garbage element: not a slot.
+                return null;
             }
         }
 

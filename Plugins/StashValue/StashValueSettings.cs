@@ -16,7 +16,7 @@ namespace StashValue
         /// <summary>Draw value labels over inventory items (right panel).</summary>
         public bool ShowInventoryOverlay;
 
-        /// <summary>Draw debug boxes over detected item slots.</summary>
+        /// <summary>Draw debug boxes (with item base names) over detected item slots.</summary>
         public bool ShowDebugInfo;
 
         /// <summary>Minimum value (in the display currency) for an item to get a label.</summary>
@@ -29,7 +29,7 @@ namespace StashValue
         public int PriceSource = 1;
 
         /// <summary>PoE2 league name for price lookups.</summary>
-        public string League = "Standard";
+        public string League = "Runes of Aldur";
 
         /// <summary>Automatic price refresh interval in minutes.</summary>
         public int RefreshIntervalMin = 5;

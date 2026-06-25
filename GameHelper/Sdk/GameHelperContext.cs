@@ -209,6 +209,90 @@ namespace GameHelper.Sdk
 
         /// <inheritdoc />
         public IReadOnlyList<IItemSlot> EnumerateOpenItemSlots() => ItemSlotScanner.Scan();
+
+        /// <inheritdoc />
+        public IUiElement? FindElementByStringId(string stringId, IUiElement? root = null)
+        {
+            if (string.IsNullOrEmpty(stringId))
+            {
+                return null;
+            }
+
+            var roots = new List<RemoteObjects.UiElement.UiElementBase>();
+            if (root is UiElementAdapter adapter)
+            {
+                roots.Add(adapter.Element);
+            }
+            else
+            {
+                var gameUi = Core.States.InGameStateObject.GameUi;
+                if (gameUi.LeftPanel != null)
+                {
+                    roots.Add(gameUi.LeftPanel);
+                }
+
+                if (gameUi.RightPanel != null)
+                {
+                    roots.Add(gameUi.RightPanel);
+                }
+            }
+
+            var visited = new HashSet<nint>();
+            foreach (var r in roots)
+            {
+                var found = FindByStringId(r, stringId, visited, 0);
+                if (found != null)
+                {
+                    return new UiElementAdapter(found);
+                }
+            }
+
+            return null;
+        }
+
+        private static RemoteObjects.UiElement.UiElementBase FindByStringId(
+            RemoteObjects.UiElement.UiElementBase node, string stringId, HashSet<nint> visited, int depth)
+        {
+            if (node == null || node.Address == IntPtr.Zero || depth > 64 ||
+                visited.Count > 20000 || !visited.Add(node.Address))
+            {
+                return null;
+            }
+
+            try
+            {
+                if (string.Equals(node.StringId, stringId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return node;
+                }
+            }
+            catch
+            {
+                // unreadable StringId — skip this node, keep walking.
+            }
+
+            var count = node.TotalChildrens;
+            for (var i = 0; i < count; i++)
+            {
+                RemoteObjects.UiElement.UiElementBase child;
+                try
+                {
+                    child = node[i];
+                }
+                catch
+                {
+                    continue;
+                }
+
+                var found = FindByStringId(child, stringId, visited, depth + 1);
+                if (found != null)
+                {
+                    return found;
+                }
+            }
+
+            return null;
+        }
     }
 
     /// <summary>Overlay metrics + texture management adapter.</summary>

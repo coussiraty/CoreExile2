@@ -279,6 +279,17 @@ namespace GameHelper.Sdk
                 return false;
             }
 
+            if (typeof(TComponent) == typeof(IGroundItem))
+            {
+                if (this.entity.TryGetComponent<WorldItem>(out var worldItem))
+                {
+                    component = (TComponent)(IComponent)new GroundItemAdapter(worldItem);
+                    return true;
+                }
+
+                return false;
+            }
+
             return false;
         }
     }

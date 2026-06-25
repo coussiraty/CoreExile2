@@ -149,6 +149,29 @@ namespace GameHelper.Sdk
         public bool IsStrongbox => this.chest.IsStrongbox;
     }
 
+    /// <summary>Adapter exposing a host <see cref="WorldItem" /> component as an SDK <see cref="IGroundItem" />.</summary>
+    internal sealed class GroundItemAdapter : IGroundItem
+    {
+        private readonly WorldItem worldItem;
+
+        internal GroundItemAdapter(WorldItem worldItem) => this.worldItem = worldItem;
+
+        /// <inheritdoc />
+        public string ItemPath => this.worldItem.ItemPath;
+
+        /// <inheritdoc />
+        public int StackCount => this.worldItem.StackCount;
+
+        /// <inheritdoc />
+        public ExileBridge.Rarity Rarity => this.worldItem.Rarity switch
+        {
+            GameHelper.RemoteEnums.Rarity.Magic => ExileBridge.Rarity.Magic,
+            GameHelper.RemoteEnums.Rarity.Rare => ExileBridge.Rarity.Rare,
+            GameHelper.RemoteEnums.Rarity.Unique => ExileBridge.Rarity.Unique,
+            _ => ExileBridge.Rarity.Normal,
+        };
+    }
+
     /// <summary>Adapter for the <see cref="MinimapIcon" /> component.</summary>
     internal sealed class MinimapIconAdapter : IMinimapIcon
     {
