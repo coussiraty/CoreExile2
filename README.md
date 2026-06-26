@@ -113,7 +113,26 @@ Plugins\<PluginName>\config\
   `GameHelper\bin\<Configuration>\net10.0-windows\win-x64\`, not from `Launcher\bin\...`.
 - **Overlay does not attach** — run the overlay at the same privilege level as the game.
 
+## Writing your own plugin
+
+CoreExile2 has a self-contained plugin SDK (**ExileBridge**). See
+[PLUGIN_GUIDE.md](PLUGIN_GUIDE.md) for the full guide: the services exposed
+(`Ctx.Game`, `Ctx.Entities`, `Ctx.Ui`, …), entity components, the input/drawing helpers,
+and complete copy-paste examples.
+
 ## Credits
 
 Built on the open-source GameHelper / GameOffsets engine. Pricing data from
 [poe.ninja](https://poe.ninja) and [poe2scout](https://poe2scout.com).
+
+Several bundled plugins are **adaptations of other people's work**, ported to run on this
+fork's ExileBridge SDK. Full credit to the original authors — the ideas/implementations are
+theirs; only the SDK wiring was changed here:
+
+- **StashValue** — based on [zx0CF1/StashValue](https://github.com/zx0CF1/StashValue)
+- **MapKillCounter** — based on [MordWraith/MapKillCounter](https://github.com/MordWraith/MapKillCounter)
+- **RunecraftHelper** — based on [yokkenUA/RunecraftHelper](https://github.com/yokkenUA/RunecraftHelper)
+- **SekhemaHelper** — based on [yokkenUA/SekhemaHelper](https://github.com/yokkenUA/SekhemaHelper)
+
+If you are one of these authors and want different/extended credit, or want your plugin
+removed, please open an issue — happy to adjust.
