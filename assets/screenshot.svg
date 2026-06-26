@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" width="1200" height="620" role="img" aria-label="Illustrative CoreExile2 overlay layout">
+  <defs>
+    <linearGradient id="scene" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#11151a"/>
+      <stop offset="0.5" stop-color="#0c0f13"/>
+      <stop offset="1" stop-color="#070809"/>
+    </linearGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.45" r="0.75">
+      <stop offset="0" stop-color="#1b2230" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="goldS" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f0d488"/>
+      <stop offset="1" stop-color="#c79030"/>
+    </linearGradient>
+    <linearGradient id="hp" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b9382f"/>
+      <stop offset="1" stop-color="#e0584b"/>
+    </linearGradient>
+    <linearGradient id="es" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3a6ea5"/>
+      <stop offset="1" stop-color="#6fa8dc"/>
+    </linearGradient>
+  </defs>
+
+  <!-- scene -->
+  <rect width="1200" height="620" fill="url(#scene)"/>
+  <rect width="1200" height="620" fill="url(#vig)"/>
+  <!-- faint floor grid -->
+  <g stroke="#243042" stroke-opacity="0.25" stroke-width="1">
+    <path d="M0 470 L1200 410"/><path d="M0 540 L1200 470"/><path d="M0 610 L1200 540"/>
+    <path d="M300 620 L470 400"/><path d="M620 620 L660 400"/><path d="M940 620 L860 400"/>
+  </g>
+
+  <!-- ===== Minimap (top-right) ===== -->
+  <g transform="translate(992,40)">
+    <rect x="0" y="0" width="172" height="172" rx="6" fill="#0a0d10" fill-opacity="0.82" stroke="url(#goldS)" stroke-opacity="0.6" stroke-width="1.5"/>
+    <g stroke="#2c3a4d" stroke-opacity="0.5" stroke-width="1">
+      <path d="M20 86 L152 86"/><path d="M86 20 L86 152"/>
+      <path d="M40 40 L132 132"/><path d="M132 40 L40 132"/>
+    </g>
+    <circle cx="86" cy="86" r="62" fill="none" stroke="#c79030" stroke-opacity="0.25"/>
+    <!-- player -->
+    <path d="M86 86 l5 9 -5 -3 -5 3 z" fill="#fdf2cf"/>
+    <!-- entity dots -->
+    <circle cx="60" cy="58" r="3.4" fill="#e0584b"/>
+    <circle cx="120" cy="70" r="3.4" fill="#e0584b"/>
+    <circle cx="110" cy="120" r="3.4" fill="#e0584b"/>
+    <circle cx="52" cy="112" r="3.4" fill="#7fd17a"/>
+    <rect x="126" cy="0" y="118" width="7" height="7" fill="#f0d488" transform="rotate(45 129 121)"/>
+    <text x="12" y="162" font-family="Segoe UI,Arial,sans-serif" font-size="11" letter-spacing="1" fill="#9c8553">RADAR</text>
+  </g>
+
+  <!-- ===== Monster health bars (center-left) ===== -->
+  <g transform="translate(120,150)" font-family="Segoe UI,Arial,sans-serif">
+    <g>
+      <rect x="0" y="0" width="300" height="20" rx="3" fill="#0a0d10" fill-opacity="0.8" stroke="#000" stroke-opacity="0.6"/>
+      <rect x="2" y="2" width="232" height="16" rx="2" fill="url(#hp)"/>
+      <rect x="2" y="2" width="232" height="6" rx="2" fill="#ffffff" fill-opacity="0.18"/>
+      <text x="10" y="14" font-size="12" fill="#ffe9e6">Rotted Vanguard</text>
+    </g>
+    <g transform="translate(36,34)">
+      <rect x="0" y="0" width="240" height="16" rx="3" fill="#0a0d10" fill-opacity="0.8" stroke="#000" stroke-opacity="0.6"/>
+      <rect x="2" y="2" width="150" height="12" rx="2" fill="url(#hp)"/>
+      <rect x="2" y="2" width="240" height="12" rx="2" fill="none"/>
+      <text x="8" y="12" font-size="11" fill="#ffd9d4">Cultist Archer</text>
+    </g>
+    <g transform="translate(70,62)">
+      <rect x="0" y="0" width="210" height="15" rx="3" fill="#0a0d10" fill-opacity="0.8" stroke="#000" stroke-opacity="0.6"/>
+      <rect x="2" y="2" width="120" height="11" rx="2" fill="url(#hp)"/>
+      <rect x="2" y="9" width="160" height="4" rx="2" fill="url(#es)"/>
+    </g>
+  </g>
+
+  <!-- AutoAim reticle on a target -->
+  <g transform="translate(470,300)">
+    <circle r="20" fill="none" stroke="#f0d488" stroke-opacity="0.8" stroke-width="2"/>
+    <path d="M0 -28 V-12 M0 28 V12 M-28 0 H-12 M28 0 H12" stroke="#f0d488" stroke-width="2"/>
+    <circle r="3.5" fill="#e0584b"/>
+  </g>
+
+  <!-- ===== StashValue grid (right) ===== -->
+  <g transform="translate(812,300)" font-family="Segoe UI,Arial,sans-serif">
+    <rect x="-14" y="-34" width="316" height="232" rx="8" fill="#0a0d10" fill-opacity="0.78" stroke="url(#goldS)" stroke-opacity="0.45" stroke-width="1.5"/>
+    <text x="-2" y="-14" font-size="12" letter-spacing="1.5" fill="#c79030">STASH VALUE</text>
+    <text x="288" y="-14" text-anchor="end" font-size="12" fill="#9c8553">≈ 642 ex</text>
+    <!-- cells -->
+    <g>
+      <!-- row helper via explicit cells -->
+      <g transform="translate(0,0)">
+        <rect width="90" height="64" rx="4" fill="#141a1f" stroke="#2c3a4d" stroke-opacity="0.6"/>
+        <rect x="6" y="6" width="78" height="40" rx="3" fill="#1d2530"/>
+        <text x="84" y="59" text-anchor="end" font-size="13" font-weight="700" fill="#f0d488">8.5 ex</text>
+      </g>
+      <g transform="translate(98,0)">
+        <rect width="90" height="64" rx="4" fill="#141a1f" stroke="#2c3a4d" stroke-opacity="0.6"/>
+        <rect x="6" y="6" width="78" height="40" rx="3" fill="#23202a"/>
+        <text x="84" y="59" text-anchor="end" font-size="13" font-weight="700" fill="#f0d488">1.2 div</text>
+      </g>
+      <g transform="translate(196,0)">
+        <rect width="90" height="64" rx="4" fill="#141a1f" stroke="#2c3a4d" stroke-opacity="0.6"/>
+        <rect x="6" y="6" width="78" height="40" rx="3" fill="#1d2530"/>
+        <text x="84" y="59" text-anchor="end" font-size="13" font-weight="700" fill="#f0d488">34 ex</text>
+      </g>
+      <g transform="translate(0,72)">
+        <rect width="90" height="64" rx="4" fill="#141a1f" stroke="#2c3a4d" stroke-opacity="0.6"/>
+        <rect x="6" y="6" width="78" height="40" rx="3" fill="#2a2320"/>
+        <text x="84" y="59" text-anchor="end" font-size="13" font-weight="700" fill="#f0d488">3 ex</text>
+      </g>
+      <g transform="translate(98,72)">
+        <rect width="90" height="64" rx="4" fill="#141a1f" stroke="#2c3a4d" stroke-opacity="0.6"/>
+        <rect x="6" y="6" width="78" height="40" rx="3" fill="#1d2530"/>
+        <text x="84" y="59" text-anchor="end" font-size="12" font-weight="700" fill="#9fdc8a">vendor</text>
+      </g>
+      <g transform="translate(196,72)">
+        <rect width="90" height="64" rx="4" fill="#141a1f" stroke="#2c3a4d" stroke-opacity="0.6"/>
+        <rect x="6" y="6" width="78" height="40" rx="3" fill="#2a2030"/>
+        <text x="84" y="59" text-anchor="end" font-size="13" font-weight="700" fill="#f0d488">96 ex</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ===== Kill counter chip (bottom-left) ===== -->
+  <g transform="translate(120,540)" font-family="Segoe UI,Arial,sans-serif">
+    <rect x="0" y="0" width="264" height="42" rx="6" fill="#0a0d10" fill-opacity="0.8" stroke="url(#goldS)" stroke-opacity="0.45" stroke-width="1.2"/>
+    <text x="14" y="27" font-size="14" fill="#e7e0cf"><tspan fill="#c79030" font-weight="700">KILLS</tspan>  247</text>
+    <text x="250" y="27" text-anchor="end" font-size="13" fill="#9fb4c9">1,310 / hr</text>
+  </g>
+
+  <!-- illustrative caption -->
+  <text x="600" y="606" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="12" fill="#5a6470">
+    Illustrative overlay layout — replace assets/screenshot.png (or .svg) with a real capture.
+  </text>
+</svg>

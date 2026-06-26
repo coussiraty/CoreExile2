@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340" role="img" aria-label="CoreExile2 — a Path of Exile 2 overlay">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0c0a08"/>
+      <stop offset="0.5" stop-color="#15110c"/>
+      <stop offset="1" stop-color="#080605"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.62">
+      <stop offset="0" stop-color="#caa45a" stop-opacity="0.20"/>
+      <stop offset="0.55" stop-color="#7a531d" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbe9b0"/>
+      <stop offset="0.35" stop-color="#e7c878"/>
+      <stop offset="0.6" stop-color="#c79030"/>
+      <stop offset="1" stop-color="#9a6b1e"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#c79030" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#e7c878" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#c79030" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-60%" width="140%" height="220%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="1200" height="340" fill="url(#bg)"/>
+  <rect width="1200" height="340" fill="url(#glow)"/>
+
+  <!-- faint engraved frame -->
+  <rect x="16" y="16" width="1168" height="308" fill="none" stroke="#c79030" stroke-opacity="0.22" stroke-width="1.5"/>
+  <rect x="22" y="22" width="1156" height="296" fill="none" stroke="#c79030" stroke-opacity="0.10" stroke-width="1"/>
+
+  <!-- top diamond ornament -->
+  <g fill="url(#gold)" opacity="0.9">
+    <path d="M600 56 l9 9 -9 9 -9 -9 z"/>
+    <path d="M548 65 h30 v1.6 h-30 z" opacity="0.55"/>
+    <path d="M622 65 h30 v1.6 h-30 z" opacity="0.55"/>
+  </g>
+
+  <!-- wordmark -->
+  <g font-family="'Trajan Pro','Cinzel',Georgia,'Times New Roman',serif" text-anchor="middle">
+    <text x="600" y="190" font-size="104" font-weight="700" letter-spacing="6"
+          fill="url(#gold)" filter="url(#soft)">CoreExile<tspan fill="#f0d488" font-size="74" dy="-26">2</tspan></text>
+  </g>
+
+  <!-- divider rule -->
+  <rect x="330" y="226" width="540" height="2" fill="url(#rule)"/>
+
+  <!-- tagline -->
+  <text x="600" y="262" text-anchor="middle"
+        font-family="'Segoe UI',Verdana,Helvetica,Arial,sans-serif"
+        font-size="22" letter-spacing="6" fill="#cdb27e" opacity="0.92">
+    A PATH OF EXILE 2 OVERLAY
+  </text>
+  <text x="600" y="292" text-anchor="middle"
+        font-family="'Segoe UI',Verdana,Helvetica,Arial,sans-serif"
+        font-size="15" letter-spacing="3.5" fill="#7c6f57" opacity="0.85">
+    plugin SDK · self&#8209;updating launcher · patch&#8209;resilient core
+  </text>
+
+  <!-- bottom diamonds -->
+  <g fill="url(#gold)" opacity="0.7">
+    <path d="M470 285 l5 5 -5 5 -5 -5 z" opacity="0.5"/>
+    <path d="M730 285 l5 5 -5 5 -5 -5 z" opacity="0.5"/>
+  </g>
+</svg>
