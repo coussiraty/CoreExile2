@@ -25,9 +25,11 @@ namespace GameHelper.Settings
     /// </summary>
     internal static class SettingsWindow
     {
-        private static Vector4 color = new(1f, 1f, 0f, 1f);
         private static bool isOverlayRunningLocal = true;
         private static bool isSettingsWindowVisible = true;
+        private static string navPage = "General";
+        private static bool coreExpanded = true;
+        private static bool pluginsExpanded = true;
 
         private static EntityFilterType efilterType = EntityFilterType.PATH;
         private static string filterText = string.Empty;
@@ -60,92 +62,219 @@ namespace GameHelper.Settings
                 int.MaxValue));
         }
 
-        private static void DrawManuBar()
+        /// <summary>
+        ///     Draws the window body: left navigation rail + right content pane.
+        /// </summary>
+        private static void DrawShell()
         {
-            if (!ImGui.BeginMenuBar())
-            {
-                return;
-            }
-
-            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiTheme.TextMuted);
-            ImGui.Text($"GameHelper {Core.GetVersion()}");
+            ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.06f, 0.052f, 0.038f, 1f));
+            ImGui.BeginChild("ce_sidebar", new Vector2(190f, 0f), ImGuiChildFlags.Borders);
+            DrawSidebar();
+            ImGui.EndChild();
             ImGui.PopStyleColor();
-            ImGui.SameLine();
-            ImGui.TextDisabled("|");
-            ImGui.SameLine();
-            ImGui.TextDisabled($"Hide/show menu: {Core.GHSettings.MainMenuHotKey}");
 
-#if DEBUG
-            ImGui.SameLine();
-            ImGui.Checkbox("ImGui Demo", ref showImGuiDemo);
-            if (showImGuiDemo)
-            {
-                ImGui.ShowDemoWindow(ref showImGuiDemo);
-            }
-#endif
+            ImGui.SameLine(0f, 0f);
 
-            ImGui.EndMenuBar();
+            ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(28f, 22f));
+            ImGui.BeginChild("ce_content", new Vector2(0f, 0f), ImGuiChildFlags.AlwaysUseWindowPadding);
+            DrawContent();
+            ImGui.EndChild();
+            ImGui.PopStyleVar();
         }
 
-        private static void DrawTabs()
+        private static void DrawSidebar()
         {
-            if (ImGui.BeginTabBar("settingsTabBar", ImGuiTabBarFlags.AutoSelectNewTabs | ImGuiTabBarFlags.Reorderable))
+            ImGui.Dummy(new Vector2(0f, 9f));
+            var hp = ImGui.GetCursorScreenPos();
+            var dl = ImGui.GetWindowDrawList();
+
+            // gold "gem" emblem (gold diamond with a dark core), matching the banner motif.
+            var dcx = hp.X + 9f;
+            var dcy = hp.Y + 11f;
+            const float ds = 8f;
+            var goldB = ImGui.GetColorU32(ImGuiTheme.AccentBright);
+            dl.AddQuadFilled(
+                new Vector2(dcx, dcy - ds), new Vector2(dcx + ds, dcy),
+                new Vector2(dcx, dcy + ds), new Vector2(dcx - ds, dcy), goldB);
+            dl.AddQuadFilled(
+                new Vector2(dcx, dcy - 3.5f), new Vector2(dcx + 3.5f, dcy),
+                new Vector2(dcx, dcy + 3.5f), new Vector2(dcx - 3.5f, dcy),
+                ImGui.GetColorU32(new Vector4(0.10f, 0.085f, 0.05f, 1f)));
+
+            ImGui.SetCursorPosX(32f);
+            ImGui.SetWindowFontScale(1.2f);
+            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiTheme.Accent);
+            ImGui.TextUnformatted("CoreExile2");
+            ImGui.PopStyleColor();
+            ImGui.SetWindowFontScale(1f);
+
+            ImGui.SetCursorPosX(32f);
+            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiTheme.TextMuted);
+            ImGui.TextUnformatted($"{Core.GetVersion()}  ·  by Coussiraty");
+            ImGui.PopStyleColor();
+
+            ImGui.Dummy(new Vector2(0f, 11f));
+            var sepY = ImGui.GetCursorScreenPos().Y;
+            var wx = ImGui.GetWindowPos().X;
+            var ww = ImGui.GetWindowWidth();
+            dl.AddLine(
+                new Vector2(wx + 12f, sepY), new Vector2(wx + ww - 12f, sepY),
+                ImGui.GetColorU32(new Vector4(0.78f, 0.565f, 0.19f, 0.22f)), 1f);
+            ImGui.Dummy(new Vector2(0f, 6f));
+
+            if (NavSection("CORE", ref coreExpanded))
             {
-                if (ImGui.BeginTabItem("General"))
+                NavItem("General", "General");
+                NavItem("Plugins", "Plugins");
+                NavItem("Developer", "Developer");
+                NavItem("About", "About");
+            }
+
+            if (NavSection("PLUGINS", ref pluginsExpanded))
+            {
+                foreach (var container in PManager.Plugins)
                 {
-                    if (ImGui.BeginChild("GeneralChildSetting"))
+                    if (container.Metadata.Enable)
                     {
-                        DrawCoreSettings();
+                        NavPluginItem(container.Name);
                     }
-
-                    ImGui.EndChild();
-                    ImGui.EndTabItem();
                 }
-
-                if (ImGui.BeginTabItem("Plugins"))
-                {
-                    if (ImGui.BeginChild("PluginsChildSetting"))
-                    {
-                        DrawPluginManager();
-                    }
-
-                    ImGui.EndChild();
-                    ImGui.EndTabItem();
-                }
-
-                DrawPluginSettingsTabs();
-
-                ImGui.EndTabBar();
             }
         }
 
         /// <summary>
-        ///     Draws the per-plugin settings tabs for every enabled plugin.
+        ///     Draws a collapsible sidebar section label with a caret. Returns the expanded state.
         /// </summary>
-        private static void DrawPluginSettingsTabs()
+        private static bool NavSection(string text, ref bool expanded)
         {
-            foreach (var container in PManager.Plugins)
+            ImGui.Dummy(new Vector2(0f, 6f));
+            var p = ImGui.GetCursorScreenPos();
+            var avail = ImGui.GetContentRegionAvail().X;
+            var h = ImGui.GetTextLineHeight() + 6f;
+
+            ImGui.PushStyleColor(ImGuiCol.Header, new Vector4(0f, 0f, 0f, 0f));
+            ImGui.PushStyleColor(ImGuiCol.HeaderHovered, new Vector4(0.78f, 0.565f, 0.19f, 0.08f));
+            ImGui.PushStyleColor(ImGuiCol.HeaderActive, new Vector4(0.78f, 0.565f, 0.19f, 0.14f));
+            if (ImGui.Selectable("##sect_" + text, false, ImGuiSelectableFlags.None, new Vector2(avail, h)))
             {
-                if (!container.Metadata.Enable)
-                {
-                    continue;
-                }
-
-                ImGui.PushStyleColor(ImGuiCol.Tab, new Vector4(0.16f, 0.20f, 0.30f, 1f));
-                ImGui.PushStyleColor(ImGuiCol.TabHovered, new Vector4(0.28f, 0.38f, 0.55f, 1f));
-                ImGui.PushStyleColor(ImGuiCol.TabSelected, ImGuiTheme.Accent);
-                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.95f, 0.96f, 1f, 1f));
-
-                if (ImGui.BeginTabItem($"{container.Name}##pluginCfg"))
-                {
-                    ImGuiTheme.BeginPanel($"PluginPanel_{container.Name}");
-                    container.Plugin.DrawSettings();
-                    ImGuiTheme.EndPanel();
-                    ImGui.EndTabItem();
-                }
-
-                ImGui.PopStyleColor(4);
+                expanded = !expanded;
             }
+
+            ImGui.PopStyleColor(3);
+
+            var dl = ImGui.GetWindowDrawList();
+            var col = ImGui.GetColorU32(new Vector4(0.52f, 0.47f, 0.36f, 1f));
+            var cy = p.Y + (h * 0.5f);
+            if (expanded)
+            {
+                dl.AddTriangleFilled(
+                    new Vector2(p.X + 4f, cy - 3f), new Vector2(p.X + 12f, cy - 3f), new Vector2(p.X + 8f, cy + 3f), col);
+            }
+            else
+            {
+                dl.AddTriangleFilled(
+                    new Vector2(p.X + 5f, cy - 4f), new Vector2(p.X + 5f, cy + 4f), new Vector2(p.X + 11f, cy), col);
+            }
+
+            dl.AddText(new Vector2(p.X + 22f, p.Y + ((h - ImGui.GetTextLineHeight()) * 0.5f)), col, text);
+            ImGui.Dummy(new Vector2(0f, 2f));
+            return expanded;
+        }
+
+        private static void NavItem(string page, string label)
+        {
+            DrawNavSelectable(page, "      " + label, navPage == page);
+        }
+
+        private static void NavPluginItem(string name)
+        {
+            var page = "plugin:" + name;
+            var p0 = ImGui.GetCursorScreenPos();
+            var rowH = ImGui.GetTextLineHeight() + 12f;
+            DrawNavSelectable(page, "        " + name, navPage == page);
+            ImGui.GetWindowDrawList().AddCircleFilled(
+                new Vector2(p0.X + 16f, p0.Y + (rowH * 0.5f)), 3.5f, ImGui.GetColorU32(ImGuiTheme.Success));
+        }
+
+        private static void DrawNavSelectable(string page, string label, bool selected)
+        {
+            var p0 = ImGui.GetCursorScreenPos();
+            var rowH = ImGui.GetTextLineHeight() + 12f;
+            ImGui.PushStyleVar(ImGuiStyleVar.SelectableTextAlign, new Vector2(0f, 0.5f));
+            ImGui.PushStyleColor(ImGuiCol.Header, new Vector4(0.78f, 0.565f, 0.19f, 0.14f));
+            ImGui.PushStyleColor(ImGuiCol.HeaderHovered, new Vector4(0.78f, 0.565f, 0.19f, 0.10f));
+            ImGui.PushStyleColor(ImGuiCol.HeaderActive, new Vector4(0.78f, 0.565f, 0.19f, 0.20f));
+            ImGui.PushStyleColor(ImGuiCol.Text, selected
+                ? new Vector4(0.96f, 0.90f, 0.76f, 1f)
+                : new Vector4(0.72f, 0.68f, 0.57f, 1f));
+            if (ImGui.Selectable(label, selected, ImGuiSelectableFlags.None, new Vector2(0f, rowH)))
+            {
+                navPage = page;
+            }
+
+            ImGui.PopStyleColor(4);
+            ImGui.PopStyleVar();
+            if (selected)
+            {
+                ImGui.GetWindowDrawList().AddRectFilled(
+                    new Vector2(p0.X, p0.Y + (rowH * 0.2f)),
+                    new Vector2(p0.X + 3f, p0.Y + (rowH * 0.8f)),
+                    ImGui.GetColorU32(ImGuiTheme.AccentBright), 2f);
+            }
+        }
+
+        private static void DrawContent()
+        {
+            if (navPage.StartsWith("plugin:"))
+            {
+                var name = navPage.Substring("plugin:".Length);
+                var container = PManager.Plugins.FirstOrDefault(x => x.Name == name && x.Metadata.Enable);
+                if (container != null)
+                {
+                    PageHeader(container.Name, "Plugin settings.");
+                    container.Plugin.DrawSettings();
+                    return;
+                }
+
+                navPage = "General";
+            }
+
+            switch (navPage)
+            {
+                case "Plugins":
+                    PageHeader("Plugins", "Enable or disable plugins. Each enabled plugin gets a sidebar entry.");
+                    DrawPluginManager();
+                    break;
+                case "Developer":
+                    PageHeader("Developer", "Reverse-engineering and debugging tools.");
+                    DrawDevTools();
+                    break;
+                case "About":
+                    PageHeader("About");
+                    DrawAbout();
+                    break;
+                default:
+                    PageHeader("General", $"Settings save automatically when you hide the overlay ({Core.GHSettings.MainMenuHotKey}).");
+                    DrawGeneralPage();
+                    break;
+            }
+        }
+
+        private static void PageHeader(string title, string? subtitle = null)
+        {
+            ImGui.SetWindowFontScale(1.28f);
+            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiTheme.AccentBright);
+            ImGui.TextUnformatted(title);
+            ImGui.PopStyleColor();
+            ImGui.SetWindowFontScale(1f);
+            if (!string.IsNullOrEmpty(subtitle))
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, ImGuiTheme.TextMuted);
+                ImGui.TextWrapped(subtitle);
+                ImGui.PopStyleColor();
+            }
+
+            ImGui.Dummy(new Vector2(0f, 12f));
         }
 
         /// <summary>
@@ -153,10 +282,6 @@ namespace GameHelper.Settings
         /// </summary>
         private static void DrawPluginManager()
         {
-            ImGuiTheme.SectionHeader(
-                "Plugin Management",
-                "Enable or disable plugins. Enabled plugins get their own settings tab. Changes are saved automatically.");
-
             var enabledCount = PManager.Plugins.Count(p => p.Metadata.Enable);
             ImGui.TextDisabled($"Active: {enabledCount} / {PManager.Plugins.Count}");
             ImGui.SameLine();
@@ -251,50 +376,76 @@ namespace GameHelper.Settings
         }
 
         /// <summary>
-        ///     Draws the currently selected settings on ImGui.
+        ///     Draws the General page: everyday settings as cards, advanced behind collapsibles.
         /// </summary>
-        private static void DrawCoreSettings()
+        private static void DrawGeneralPage()
         {
-            ImGuiTheme.SectionHeader(
-                "Status",
-                $"All settings (including plugins) are saved automatically when you close the overlay or hide it via {Core.GHSettings.MainMenuHotKey}.");
-            ImGui.Text("Current Game State:");
-            ImGui.SameLine();
-            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiTheme.Accent);
-            ImGui.Text($"{Core.States.GameCurrentState}");
-            ImGui.PopStyleColor();
-            ImGui.InputText("Party Leader Name", ref Core.GHSettings.LeaderName, 200);
+            ImGuiTheme.BeginCard("ce_card_status", "Status");
+            ImGuiTheme.RowLeft("Game state");
+            ImGuiTheme.BadgeRight($"{Core.States.GameCurrentState}", ImGuiTheme.AccentBright, new Vector4(0.09f, 0.07f, 0.03f, 1f));
+            ImGuiTheme.RowLeft("Party leader");
+            ImGuiTheme.RightAlignNext(220f);
+            ImGui.InputTextWithHint("##LeaderName", "character name", ref Core.GHSettings.LeaderName, 200);
+            ImGuiHelper.ToolTip("Character name the FollowBot / party-aware plugins follow.");
+            ImGuiTheme.EndCard();
 
-            ImGuiTheme.SectionHeader("Controls & Display");
-            DrawInputConfigWidget();
+            ImGuiTheme.BeginCard("ce_card_keys", "Hotkeys");
+            ImGuiTheme.RowLeft("Settings window");
+            ImGuiTheme.RightAlignNext(140f);
+            ImGuiHelper.NonContinuousEnumComboBox("##key_menu", ref Core.GHSettings.MainMenuHotKey);
+            ImGuiTheme.RowLeft("Toggle rendering");
+            ImGuiTheme.RightAlignNext(140f);
+            ImGuiHelper.NonContinuousEnumComboBox("##key_render", ref Core.GHSettings.DisableAllRenderingKey);
+            ImGuiTheme.EndCard();
+
+            ImGuiTheme.BeginCard("ce_card_overlay", "Overlay");
+            ImGuiTheme.ToggleRow("Hide settings window on startup", ref Core.GHSettings.HideSettingWindowOnStart);
+            ImGuiTheme.ToggleRow("Close CoreExile2 when the game exits", ref Core.GHSettings.CloseWhenGameExit);
+            ImGuiTheme.ToggleRow("Pause entity processing in town / hideout", ref Core.GHSettings.DisableEntityProcessingInTownOrHideout);
+
+            var vsync = Core.Overlay.VSync;
+            if (ImGuiTheme.ToggleRow("V-Sync", ref vsync))
+            {
+                Core.Overlay.VSync = vsync;
+                Core.GHSettings.Vsync = vsync;
+            }
+
+            ImGui.BeginDisabled(Core.Overlay.VSync);
+            ImGuiTheme.RowLeft("FPS limit (0 = off)");
+            ImGuiTheme.RightAlignNext(110f);
+            if (ImGui.InputInt("##fpslimit", ref Core.GHSettings.FPSLimit, 0))
+            {
+                Core.Overlay.FPSLimit = Core.GHSettings.FPSLimit;
+            }
+
+            ImGui.EndDisabled();
+            ImGuiHelper.ToolTip("With V-Sync off and no FPS limit, use an external limiter " +
+                "(e.g. NVIDIA Control Panel -> Manage 3D Settings -> Max Frame Rate).");
+
+            ImGuiTheme.ToggleRow("Show performance stats (FPS)", ref Core.GHSettings.ShowPerfStats);
+            if (Core.GHSettings.ShowPerfStats)
+            {
+                ImGui.Indent();
+                ImGuiTheme.ToggleRow("Hide when game is in background", ref Core.GHSettings.HidePerfStatsWhenBg);
+                ImGuiTheme.ToggleRow("Minimal stats only", ref Core.GHSettings.MinimumPerfStats);
+                ImGui.Unindent();
+            }
+
+            ImGuiTheme.EndCard();
+
+            ImGuiTheme.SectionHeader("More");
             DrawNearbyWidget();
-            DrawToolsConfig();
+            DrawAdvancedConfig();
+            ChangeFontWidget();
 
+            ImGui.Dummy(new Vector2(0f, 2f));
             ImGuiTheme.SectionHeader(
-                "Filters & Tracking",
-                "Advanced entity filters. Change zone or restart after edits.");
+                "Entity filters",
+                "Highlight or ignore monsters / NPCs / objects by metadata path. Change zone or restart after edits.");
             DrawPoiWidget();
             DrawMonstersToIgnore();
             DrawNPCWidget();
             DrawMiscObjWidget();
-
-            ImGuiTheme.SectionHeader("Advanced");
-            DrawMiscConfig();
-            ChangeFontWidget();
-            DrawReloadPluginWidget();
-
-            ImGuiTheme.SectionHeader("About");
-            ImGui.PushTextWrapPos(ImGui.GetContentRegionAvail().X);
-            ImGui.TextColored(color, "This is free software, if you purchased a copy you have been scammed");
-            ImGui.TextColored(color, "For PoE2 0.5.2");
-            ImGui.TextColored(color, "Zero Day developer is Kronos");
-            ImGui.TextColored(color, "Offset updater is Arsenic, Nabeora, Lafko");
-            ImGui.TextColored(color, "Official GameHelper2 Discord is https://discord.gg/864GyuM5S");
-            ImGui.NewLine();
-            ImGui.TextColored(Vector4.One, "Developer of this software is not responsible for " +
-                              "any loss that may happen due to the usage of this software. Use this " +
-                              "software at your own risk.");
-            ImGui.PopTextWrapPos();
         }
 
         private static void DrawNearbyWidget()
@@ -321,7 +472,7 @@ namespace GameHelper.Settings
         /// </summary>
         private static void ChangeFontWidget()
         {
-            if (ImGui.CollapsingHeader("Change Fonts"))
+            if (ImGui.CollapsingHeader("Fonts & language"))
             {
                 ImGui.Checkbox("Universal Font (render any language across the whole overlay)", ref Core.GHSettings.UniversalFont);
                 ImGuiHelper.ToolTip("Loads a bundled merged font (DejaVuSans + the font below + GNU Unifont over the whole " +
@@ -587,144 +738,134 @@ namespace GameHelper.Settings
         }
 
         /// <summary>
-        ///     Draws the ImGui widget for changing keyboard related settings
+        ///     Draws the About section.
         /// </summary>
-        private static void DrawInputConfigWidget()
+        private static void DrawAbout()
         {
-            if (ImGui.CollapsingHeader("Input Config"))
-            {
-                ImGui.DragInt("Key Timeout", ref Core.GHSettings.KeyPressTimeout, 0.2f, 60, 300);
-                ImGuiHelper.ToolTip("When GameOverlay press a key in the game, the key " +
-                    "has to go to the GGG server for it to work. This process takes " +
-                    "time equal to your latency x 3. During this time GameOverlay might " +
-                    "press that key again. Set the key timeout value to latency x 3 so " +
-                    "this doesn't happen. e.g. for 30ms latency, set it to 90ms. Also, " +
-                    "do not go below 60 (due to server ticks), no matter how good your latency is.");
-                ImGuiHelper.NonContinuousEnumComboBox("Settings Window Key", ref Core.GHSettings.MainMenuHotKey);
-                ImGuiHelper.NonContinuousEnumComboBox("Disable Rendering Key", ref Core.GHSettings.DisableAllRenderingKey);
-                ImGuiHelper.NonContinuousEnumComboBox("Element Finder Key", ref Core.GHSettings.ElementFinderHotKey);
-            }
+            ImGui.PushTextWrapPos(ImGui.GetContentRegionAvail().X);
+            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiTheme.Accent);
+            ImGui.Text($"CoreExile2 {Core.GetVersion()}");
+            ImGui.PopStyleColor();
+            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiTheme.AccentMuted);
+            ImGui.TextUnformatted("by Coussiraty");
+            ImGui.PopStyleColor();
+            ImGui.Spacing();
+            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiTheme.TextMuted);
+            ImGui.TextWrapped("Path of Exile 2 overlay · built on the GameHelper2 engine.");
+            ImGui.Spacing();
+            ImGui.TextWrapped("Use at your own risk. Overlays that read game memory can violate the " +
+                              "game's Terms of Service. The developer is not responsible for any loss " +
+                              "resulting from the use of this software.");
+            ImGui.PopStyleColor();
+            ImGui.PopTextWrapPos();
         }
 
         /// <summary>
-        ///     Draws the imgui widget for enabling/disabling tools.
+        ///     Draws the developer / reverse-engineering tools tab.
         /// </summary>
-        private static void DrawToolsConfig()
+        private static void DrawDevTools()
         {
-            if (ImGui.CollapsingHeader("Misc Tools"))
-            {
-                ImGui.Checkbox("Performance Stats", ref Core.GHSettings.ShowPerfStats);
-                if (Core.GHSettings.ShowPerfStats)
-                {
-                    ImGui.Spacing();
-                    ImGui.SameLine();
-                    ImGui.Spacing();
-                    ImGui.SameLine();
-                    ImGui.Checkbox("Hide when game is in background", ref Core.GHSettings.HidePerfStatsWhenBg);
-                    ImGui.Spacing();
-                    ImGui.SameLine();
-                    ImGui.Spacing();
-                    ImGui.SameLine();
-                    ImGui.Checkbox("Show minimum stats", ref Core.GHSettings.MinimumPerfStats);
-                }
+            ImGuiTheme.BeginCard("ce_card_inspect", "Inspectors");
+            ImGuiTheme.ToggleRow("Game UI Explorer", ref Core.GHSettings.ShowGameUiExplorer);
+            ImGuiTheme.ToggleRow("Data Visualization (DV)", ref Core.GHSettings.ShowDataVisualization);
+            ImGuiTheme.ToggleRow("Item Slot Debug (stash / inventory / merchant)", ref Core.GHSettings.ShowItemSlotDebug);
+            ImGuiTheme.ToggleRow("Element Finder", ref Core.GHSettings.ShowElementFinder);
+            ImGuiTheme.RowLeft("Element Finder key");
+            ImGuiTheme.RightAlignNext(140f);
+            ImGuiHelper.NonContinuousEnumComboBox("##key_elem", ref Core.GHSettings.ElementFinderHotKey);
+            ImGuiTheme.EndCard();
 
-                ImGui.Checkbox("Game UiExplorer (GE)", ref Core.GHSettings.ShowGameUiExplorer);
-                ImGui.Checkbox("Element Finder", ref Core.GHSettings.ShowElementFinder);
-                ImGui.Checkbox("Data Visualization (DV)", ref Core.GHSettings.ShowDataVisualization);
-                ImGui.Checkbox("Performance Profiler", ref Core.GHSettings.ShowPerfProfiler);
+            ImGuiTheme.BeginCard("ce_card_prof", "Profiling");
+            ImGuiTheme.ToggleRow("Performance Profiler", ref Core.GHSettings.ShowPerfProfiler);
+            ImGuiTheme.EndCard();
+
 #if DEBUG
-                ImGui.Checkbox("Krangled Passive Detector", ref Core.GHSettings.ShowKrangledPassiveDetector);
-#endif
+            ImGuiTheme.BeginCard("ce_card_debug", "Debug build only");
+            ImGuiTheme.ToggleRow("Krangled Passive Detector", ref Core.GHSettings.ShowKrangledPassiveDetector);
+            ImGuiTheme.ToggleRow("ImGui demo window", ref showImGuiDemo);
+            if (showImGuiDemo)
+            {
+                ImGui.ShowDemoWindow(ref showImGuiDemo);
             }
+
+            DrawReloadPluginWidget();
+            ImGuiTheme.EndCard();
+#endif
         }
 
         /// <summary>
-        ///     Draws the imgui widget for showing misc config
+        ///     Draws the collapsed "Advanced" block: performance tuning, staleness fixes,
+        ///     and client-compatibility toggles most users never touch.
         /// </summary>
-        private static void DrawMiscConfig()
+        private static void DrawAdvancedConfig()
         {
-            if (ImGui.CollapsingHeader("Miscellaneous Config"))
+            if (!ImGui.CollapsingHeader("Advanced (performance & compatibility)"))
             {
-                if (ImGui.Checkbox("Fix Taskbar not showing", ref Core.GHSettings.FixTaskbarNotShowing))
+                return;
+            }
+
+            ImGui.TextDisabled("Most people never need these — the defaults are safe.");
+            ImGui.Spacing();
+
+            ImGui.SetNextItemWidth(220f);
+            ImGui.DragInt("Key send timeout (ms)", ref Core.GHSettings.KeyPressTimeout, 0.2f, 60, 300);
+            ImGuiHelper.ToolTip("Time the overlay waits between key presses in-game (~ latency x 3). " +
+                "e.g. 30ms latency -> 90ms. Don't go below 60 (server ticks).");
+
+            ImGui.Text("Entity reader CPU limit");
+            ImGuiHelper.ToolTip("Limits the entity-reading algorithm to N CPUs. -1 disables the limit.");
+            ImGui.SameLine();
+            if (ImGui.RadioButton("-1", Core.GHSettings.EntityReaderMaxDegreeOfParallelism == -1))
+            {
+                Core.GHSettings.EntityReaderMaxDegreeOfParallelism = -1;
+            }
+
+            ImGui.SameLine();
+            for (var i = 2; i < 128; i *= 2)
+            {
+                if (ImGui.RadioButton(i.ToString(), Core.GHSettings.EntityReaderMaxDegreeOfParallelism == i))
                 {
-                    if (Core.States.GameCurrentState != GameStateTypes.GameNotLoaded)
-                    {
-                        CoroutineHandler.RaiseEvent(GameHelperEvents.OnMoved);
-                    }
+                    Core.GHSettings.EntityReaderMaxDegreeOfParallelism = i;
                 }
 
-                ImGui.Checkbox("Disable entity processing when in town or hideout",
-                    ref Core.GHSettings.DisableEntityProcessingInTownOrHideout);
-                ImGui.Checkbox("Hide overlay settings upon start", ref Core.GHSettings.HideSettingWindowOnStart);
-                ImGui.Checkbox("Close GameHelper when Game Exit", ref Core.GHSettings.CloseWhenGameExit);
-                if (ImGui.Checkbox("V-Sync", ref Core.Overlay.VSync))
-                {
-                    Core.GHSettings.Vsync = Core.Overlay.VSync;
-                }
-
-                ImGui.BeginDisabled(Core.Overlay.VSync);
-                if (ImGui.InputInt("FPS Limiter (0 to disable)", ref Core.GHSettings.FPSLimit))
-                {
-                    Core.Overlay.FPSLimit = Core.GHSettings.FPSLimit;
-                }
-
-                ImGui.EndDisabled();
-
-                ImGuiHelper.ToolTip("WARNING: There is no rate limiter in GameHelper, once V-Sync is off,\n" +
-                    "it's your responsibility to use external rate limiter e.g. NVIDIA Control Panel\n" +
-                    "-> Manage 3D Settings -> Set Max Framerate to what your monitor support.");
-                ImGui.Checkbox("Process all renderable entities", ref Core.GHSettings.ProcessAllRenderableEntities);
-                ImGuiHelper.ToolTip("WARNING: This will greatly reduce GH speed as well as increase crashes/glitches. Always keep it unchecked.");
-                ImGui.Checkbox("Disable debug counters (do it on 6 man party + juiced maps only)", ref Core.GHSettings.DisableAllCounters);
-                ImGui.Text("Entity MaxDegreeOfParallelism");
-                ImGuiHelper.ToolTip("This limits the entity reading algorithm to a set number of CPUs." +
-                    " Select -1 to disable this limit. Use Task Manager CPU usage stat + Misc Tools -> performance stats" +
-                    " to figure out best FPS to CPU usage ratio.");
-                ImGui.SameLine();
-                if (ImGui.RadioButton("-1", Core.GHSettings.EntityReaderMaxDegreeOfParallelism == -1))
-                {
-                    Core.GHSettings.EntityReaderMaxDegreeOfParallelism = -1;
-                }
-                ImGui.SameLine();
-
-                for (var i = 2; i < 128; i*=2)
-                {
-                    if (ImGui.RadioButton(i.ToString(), Core.GHSettings.EntityReaderMaxDegreeOfParallelism == i))
-                    {
-                        Core.GHSettings.EntityReaderMaxDegreeOfParallelism = i;
-                    }
-
-                    if (i*2 < 128)
-                    {
-                        ImGui.SameLine();
-                    }
-                }
-
-                ImGui.Checkbox("Is Taiwan client", ref Core.GHSettings.IsTaiwanClient);
-
-                ImGui.Separator();
-                ImGui.Text("Entity Staleness Fixes");
-                ImGuiHelper.ToolTip("These options help detect and fix stale entity data " +
-                    "(e.g. NPCs that teleport but keep old position in memory).");
-
-                ImGui.Checkbox("Enable NPC entity cleanup", ref Core.GHSettings.EnableNpcEntityCleanup);
-                ImGuiHelper.ToolTip("Include NPC entities in the removal logic when they go invalid.\n" +
-                    "Prevents stale NPC entities from lingering in the entity dictionary.");
-
-                ImGui.Checkbox("Enable stale entity cleanup", ref Core.GHSettings.EnableStaleEntityCleanup);
-                ImGuiHelper.ToolTip("Remove any entity that stays invalid for many consecutive frames,\n" +
-                    "regardless of entity type. Catches NPCs and other entities that\n" +
-                    "the default cleanup misses.");
-
-                if (Core.GHSettings.EnableStaleEntityCleanup)
+                if (i * 2 < 128)
                 {
                     ImGui.SameLine();
-                    ImGui.SetNextItemWidth(80);
-                    ImGui.InputInt("threshold (frames)", ref Core.GHSettings.StaleEntityFrameThreshold);
-                    if (Core.GHSettings.StaleEntityFrameThreshold < 10)
-                        Core.GHSettings.StaleEntityFrameThreshold = 10;
                 }
             }
+
+            ImGui.Checkbox("Process all renderable entities", ref Core.GHSettings.ProcessAllRenderableEntities);
+            ImGuiHelper.ToolTip("WARNING: greatly reduces speed and increases crashes/glitches. Keep this off.");
+            ImGui.Checkbox("Disable debug counters (6-man party + juiced maps only)", ref Core.GHSettings.DisableAllCounters);
+
+            ImGui.Separator();
+            ImGui.Text("Entity staleness fixes");
+            ImGuiHelper.ToolTip("Detect and fix stale entity data (e.g. NPCs that teleport but keep an old position).");
+            ImGui.Checkbox("Clean up invalid NPC entities", ref Core.GHSettings.EnableNpcEntityCleanup);
+            ImGui.Checkbox("Clean up any long-invalid entity", ref Core.GHSettings.EnableStaleEntityCleanup);
+            if (Core.GHSettings.EnableStaleEntityCleanup)
+            {
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(80f);
+                ImGui.InputInt("threshold (frames)", ref Core.GHSettings.StaleEntityFrameThreshold);
+                if (Core.GHSettings.StaleEntityFrameThreshold < 10)
+                {
+                    Core.GHSettings.StaleEntityFrameThreshold = 10;
+                }
+            }
+
+            ImGui.Separator();
+            ImGui.Text("Client compatibility");
+            if (ImGui.Checkbox("Fix taskbar not showing", ref Core.GHSettings.FixTaskbarNotShowing))
+            {
+                if (Core.States.GameCurrentState != GameStateTypes.GameNotLoaded)
+                {
+                    CoroutineHandler.RaiseEvent(GameHelperEvents.OnMoved);
+                }
+            }
+
+            ImGui.Checkbox("Taiwan client", ref Core.GHSettings.IsTaiwanClient);
+            ImGuiHelper.ToolTip("Enable only if you play on the Taiwan realm (different memory layout).");
         }
 
         /// <summary>
@@ -825,11 +966,12 @@ namespace GameHelper.Settings
                     continue;
                 }
 
-                ImGui.SetNextWindowSizeConstraints(new Vector2(800, 600), Vector2.One * float.MaxValue);
+                ImGui.SetNextWindowSizeConstraints(new Vector2(820, 560), Vector2.One * float.MaxValue);
+                ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
                 var isMainMenuExpanded = ImGui.Begin(
-                    $"Game Overlay Settings [ {Core.GetVersion()} ]",
-                    ref isOverlayRunningLocal,
-                    ImGuiWindowFlags.MenuBar);
+                    $"CoreExile2  {Core.GetVersion()}",
+                    ref isOverlayRunningLocal);
+                ImGui.PopStyleVar();
 
                 if (!isOverlayRunningLocal)
                 {
@@ -848,8 +990,7 @@ namespace GameHelper.Settings
                     continue;
                 }
 
-                DrawManuBar();
-                DrawTabs();
+                DrawShell();
                 ImGui.End();
             }
         }

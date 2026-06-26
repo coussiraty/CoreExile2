@@ -141,6 +141,13 @@ namespace GameHelper.Settings
         public bool ShowGameUiExplorer = false;
 
         /// <summary>
+        ///     Gets or sets a value indicating whether to draw debug boxes (with item base
+        ///     names) over every item slot the inventory scanner detects in the open
+        ///     stash / inventory / merchant panels. A core diagnostic for the slot reader.
+        /// </summary>
+        public bool ShowItemSlotDebug = false;
+
+        /// <summary>
         ///     Gets or sets a value indicating whether
         ///     to show Element Finder or not.
         /// </summary>
