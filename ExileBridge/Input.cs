@@ -36,6 +36,14 @@ namespace ExileBridge
         /// <summary>Virtual-key code: Escape.</summary>
         public const int VkEscape = 0x1B;
 
+        /// <summary>Virtual-key code: Enter.</summary>
+        public const int VkReturn = 0x0D;
+
+        private const byte VkA = 0x41;
+        private const byte VkV = 0x56;
+        private const uint CfUnicodeText = 13;
+        private const uint GmemMoveable = 0x0002;
+
         private const uint KeyeventfKeydown = 0x0000;
         private const uint KeyeventfKeyup = 0x0002;
         private const uint MouseeventfLeftdown = 0x0002;
@@ -250,6 +258,110 @@ namespace ExileBridge
         /// <param name="y">absolute Y.</param>
         public static void MoveMouse(int x, int y) => SetCursorPos(x, y);
 
+        /// <summary>
+        ///     Queues sending a chat message to the game: opens chat (Enter), pastes
+        ///     <paramref name="message" /> via the clipboard (reliable for long whisper
+        ///     text with special characters), then sends it (Enter). Overwrites the
+        ///     system clipboard. Use for trade whispers and chat commands.
+        /// </summary>
+        /// <param name="message">the full message to send (e.g. an "@Account ..." whisper).</param>
+        public static void SendChat(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+            {
+                return;
+            }
+
+            Enqueue(() =>
+            {
+                if (!SetClipboardText(message))
+                {
+                    return;
+                }
+
+                Thread.Sleep(25);
+                Tap(VkReturn);          // open chat
+                Thread.Sleep(70);
+                CtrlTap(VkA);           // select any existing draft
+                Thread.Sleep(25);
+                CtrlTap(VkV);           // paste the message
+                Thread.Sleep(70);
+                Tap(VkReturn);          // send
+            });
+        }
+
+        private static void Tap(int vk)
+        {
+            keybd_event((byte)vk, 0, KeyeventfKeydown, UIntPtr.Zero);
+            Thread.Sleep(15);
+            keybd_event((byte)vk, 0, KeyeventfKeyup, UIntPtr.Zero);
+        }
+
+        private static void CtrlTap(byte vk)
+        {
+            keybd_event((byte)VkControl, 0, KeyeventfKeydown, UIntPtr.Zero);
+            keybd_event(vk, 0, KeyeventfKeydown, UIntPtr.Zero);
+            Thread.Sleep(15);
+            keybd_event(vk, 0, KeyeventfKeyup, UIntPtr.Zero);
+            keybd_event((byte)VkControl, 0, KeyeventfKeyup, UIntPtr.Zero);
+        }
+
+        private static bool SetClipboardText(string text)
+        {
+            try
+            {
+                if (!OpenClipboard(IntPtr.Zero))
+                {
+                    return false;
+                }
+
+                try
+                {
+                    EmptyClipboard();
+                    var bytes = (text.Length + 1) * 2;
+                    var hGlobal = GlobalAlloc(GmemMoveable, (UIntPtr)bytes);
+                    if (hGlobal == IntPtr.Zero)
+                    {
+                        return false;
+                    }
+
+                    var target = GlobalLock(hGlobal);
+                    if (target == IntPtr.Zero)
+                    {
+                        GlobalFree(hGlobal);
+                        return false;
+                    }
+
+                    try
+                    {
+                        Marshal.Copy(text.ToCharArray(), 0, target, text.Length);
+                        Marshal.WriteInt16(target, text.Length * 2, 0);
+                    }
+                    finally
+                    {
+                        GlobalUnlock(hGlobal);
+                    }
+
+                    if (SetClipboardData(CfUnicodeText, hGlobal) == IntPtr.Zero)
+                    {
+                        GlobalFree(hGlobal);
+                        return false;
+                    }
+
+                    // Ownership transferred to the clipboard on success; do not free.
+                    return true;
+                }
+                finally
+                {
+                    CloseClipboard();
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         /// <summary>Returns a friendly name for a virtual-key code.</summary>
         /// <param name="vk">virtual-key code.</param>
         /// <returns>display name.</returns>
@@ -306,5 +418,29 @@ namespace ExileBridge
 
         [DllImport("user32.dll")]
         private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool CloseClipboard();
+
+        [DllImport("user32.dll")]
+        private static extern bool EmptyClipboard();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalFree(IntPtr hMem);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalLock(IntPtr hMem);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool GlobalUnlock(IntPtr hMem);
     }
 }

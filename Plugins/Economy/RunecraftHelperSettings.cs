@@ -1,4 +1,4 @@
-namespace RunecraftHelper
+namespace Economy
 {
     using System;
     using ExileBridge;

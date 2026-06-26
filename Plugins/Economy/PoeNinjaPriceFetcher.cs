@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace StashValue
+namespace Economy
 {
     // Adapted from RitualHelper's pricing client (originally by caio).
     public class PoeNinjaPrice

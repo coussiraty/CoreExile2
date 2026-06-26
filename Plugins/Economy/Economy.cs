@@ -2,7 +2,7 @@
 // Copyright (c) None. All rights reserved.
 // </copyright>
 
-namespace StashValue
+namespace Economy
 {
     using System;
     using System.Collections.Generic;
@@ -21,7 +21,7 @@ namespace StashValue
     ///     <see cref="IUiService.EnumerateOpenItemSlots" />, and the self-contained
     ///     <see cref="PoeNinjaPriceFetcher" /> resolves prices from poe.ninja / poe2scout.
     /// </summary>
-    public sealed class StashValue : Plugin<StashValueSettings>
+    public sealed class Economy : Plugin<EconomySettings>
     {
         // The UI-tree scan + per-slot item read is expensive; run it a few times per second
         // and redraw the cached result every frame so the stash stays smooth.
@@ -30,17 +30,22 @@ namespace StashValue
         private readonly Stopwatch scanClock = Stopwatch.StartNew();
         private readonly List<CachedSlot> cachedSlots = new();
 
+        // Runecraft / Expedition reward pricer, folded in as a module (was a standalone plugin).
+        private readonly RunecraftHelperCore runecraft = new();
+
+        // Ritual (Tribute Shop) module — currently just the RE probe to find the RenderItem art offset.
+        private readonly RitualModule ritual = new();
+
         private string SettingsPath => Path.Combine(this.DirectoryPath, "config", "settings.json");
 
         private readonly struct CachedSlot
         {
-            public CachedSlot(Vector2 pos, Vector2 size, ItemPanel panel, string text, string debug)
+            public CachedSlot(Vector2 pos, Vector2 size, ItemPanel panel, string text)
             {
                 this.Pos = pos;
                 this.Size = size;
                 this.Panel = panel;
                 this.Text = text;
-                this.Debug = debug;
             }
 
             public Vector2 Pos { get; }
@@ -50,8 +55,6 @@ namespace StashValue
             public ItemPanel Panel { get; }
 
             public string Text { get; }
-
-            public string Debug { get; }
         }
 
         /// <inheritdoc />
@@ -62,21 +65,26 @@ namespace StashValue
                 try
                 {
                     var json = File.ReadAllText(this.SettingsPath);
-                    this.Settings = JsonConvert.DeserializeObject<StashValueSettings>(json) ?? new StashValueSettings();
+                    this.Settings = JsonConvert.DeserializeObject<EconomySettings>(json) ?? new EconomySettings();
                 }
                 catch
                 {
-                    this.Settings = new StashValueSettings();
+                    this.Settings = new EconomySettings();
                 }
             }
 
             PoeNinjaPriceFetcher.Configure(this.Settings.PriceSource, this.Settings.League ?? string.Empty, this.Settings.RefreshIntervalMin);
             PoeNinjaPriceFetcher.Initialize(this.DirectoryPath);
+
+            this.runecraft.Ctx = this.Ctx;
+            this.runecraft.DirectoryPath = this.DirectoryPath;
+            this.runecraft.OnEnable(isGameAttached);
         }
 
         /// <inheritdoc />
         public override void OnDisable()
         {
+            this.runecraft.OnDisable();
         }
 
         /// <inheritdoc />
@@ -84,6 +92,7 @@ namespace StashValue
         {
             Directory.CreateDirectory(Path.GetDirectoryName(this.SettingsPath)!);
             File.WriteAllText(this.SettingsPath, JsonConvert.SerializeObject(this.Settings, Formatting.Indented));
+            this.runecraft.SaveSettings();
         }
 
         /// <inheritdoc />
@@ -92,7 +101,10 @@ namespace StashValue
             var changed = false;
             changed |= ImGui.Checkbox("Show stash item prices", ref this.Settings.ShowOverlay);
             changed |= ImGui.Checkbox("Show inventory item prices", ref this.Settings.ShowInventoryOverlay);
+            changed |= ImGui.Checkbox("Show ritual reward prices", ref this.Settings.ShowRitualPrices);
+            changed |= ImGui.Checkbox("Show runecraft / expedition prices", ref this.Settings.ShowRunecraftPrices);
             changed |= ImGui.Checkbox("Hide price when hovering item", ref this.Settings.HidePriceOnHover);
+            changed |= ImGui.Checkbox("Log unpriced ritual rewards (debug)", ref this.Settings.RitualDebugLog);
 
             var maxThreshold = this.Settings.DisplayCurrency switch
             {
@@ -109,7 +121,6 @@ namespace StashValue
             this.Settings.MinValueEx = Math.Clamp(this.Settings.MinValueEx, 0.0f, maxThreshold);
             changed |= ImGui.SliderFloat($"Min Price Threshold ({currencyLabel})##threshold", ref this.Settings.MinValueEx, 0.0f, maxThreshold, $"%.2f {currencyLabel}");
 
-            changed |= ImGui.Checkbox("Show debug boxes over detected slots", ref this.Settings.ShowDebugInfo);
 
             ImGui.Separator();
             ImGui.Text("Display Currency");
@@ -177,11 +188,29 @@ namespace StashValue
                 var mins = Math.Max(0, (int)(DateTime.UtcNow - PoeNinjaPriceFetcher.LastFetchUtc).TotalMinutes);
                 ImGui.TextColored(new Vector4(0.5f, 0.8f, 0.5f, 1f), $"{PoeNinjaPriceFetcher.LoadedItemCount} items | {mins} min ago");
             }
+
+            ImGui.Separator();
+            if (ImGui.CollapsingHeader("Runecraft / Expedition rewards"))
+            {
+                this.runecraft.DrawSettings();
+            }
         }
 
         /// <inheritdoc />
         public override void DrawUI()
         {
+            // Runecraft/Expedition reward pricing (own panel detection); runs regardless of the
+            // stash early-returns below.
+            if (this.Settings.ShowRunecraftPrices)
+            {
+                this.runecraft.StandardTextColor = ImGui.ColorConvertFloat4ToU32(this.Settings.TextColor);
+                this.runecraft.Settings.League = this.Settings.League;
+                this.runecraft.DrawUI();
+            }
+
+            // Ritual Tribute Shop reward pricing (own panel detection).
+            this.ritual.DrawUI(this.Ctx, this.Settings);
+
             if (!this.Ctx.Game.IsInGame)
             {
                 return;
@@ -190,7 +219,7 @@ namespace StashValue
             PoeNinjaPriceFetcher.Configure(this.Settings.PriceSource, this.Settings.League ?? string.Empty, this.Settings.RefreshIntervalMin);
             PoeNinjaPriceFetcher.RefreshIfNeeded();
 
-            if (!this.Settings.ShowOverlay && !this.Settings.ShowInventoryOverlay && !this.Settings.ShowDebugInfo)
+            if (!this.Settings.ShowOverlay && !this.Settings.ShowInventoryOverlay)
             {
                 return;
             }
@@ -238,36 +267,15 @@ namespace StashValue
             {
                 var drawPrices = slot.Panel == ItemPanel.Left ? this.Settings.ShowOverlay : this.Settings.ShowInventoryOverlay;
 
-                if (this.Settings.ShowDebugInfo)
-                {
-                    var boxColor = slot.Panel == ItemPanel.Left ? 0xFF00FF00u : 0xFFFF00FFu;
-                    fg.AddRect(slot.Pos, slot.Pos + slot.Size, boxColor, 0f, ImDrawFlags.None, 2f);
-                    if (!string.IsNullOrEmpty(slot.Debug))
-                    {
-                        var dbgSize = fontSize * 0.7f;
-                        fg.AddText(font, dbgSize, slot.Pos + new Vector2(1f, 1f), 0xFF000000u, slot.Debug);
-                        fg.AddText(font, dbgSize, slot.Pos, 0xFF00FFFFu, slot.Debug);
-                    }
-                }
-
                 if (!drawPrices || hideOnHover || string.IsNullOrEmpty(slot.Text))
                 {
                     continue;
                 }
 
-                var textWidth = ImGui.CalcTextSize(slot.Text).X * this.Settings.PriceFontScale;
                 var drawPos = new Vector2(
                     slot.Pos.X + this.Settings.PriceOffsetX,
                     slot.Pos.Y + slot.Size.Y - fontSize + this.Settings.PriceOffsetY);
-
-                fg.AddRectFilled(
-                    drawPos - new Vector2(3f, 1f),
-                    drawPos + new Vector2(textWidth + 3f, fontSize + 1f),
-                    0xB0000000u,
-                    3f);
-
-                fg.AddText(font, fontSize, drawPos + new Vector2(1f, 1f), 0xCC000000u, slot.Text);
-                fg.AddText(font, fontSize, drawPos, ImGui.ColorConvertFloat4ToU32(this.Settings.TextColor), slot.Text);
+                PriceLabel.Draw(fg, font, fontSize, drawPos, slot.Text, ImGui.ColorConvertFloat4ToU32(this.Settings.TextColor));
             }
         }
 
@@ -279,9 +287,7 @@ namespace StashValue
             foreach (var slot in slots)
             {
                 var text = this.TryPriceItem(slot.Item, out var valueText) ? valueText : string.Empty;
-                var path = slot.Item.Path ?? string.Empty;
-                var debug = path.Contains('/') ? path[(path.LastIndexOf('/') + 1)..] : path;
-                this.cachedSlots.Add(new CachedSlot(slot.Position, slot.Size, slot.Panel, text, debug));
+                this.cachedSlots.Add(new CachedSlot(slot.Position, slot.Size, slot.Panel, text));
             }
         }
 

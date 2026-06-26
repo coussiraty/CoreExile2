@@ -12,6 +12,7 @@ namespace GameOffsets.Objects.States.InGameState
         [FieldOffset(0x640)] public IntPtr ChatParentPtr;
         [FieldOffset(0x6D8)] public IntPtr LeftPanelPtr;
         [FieldOffset(0x6E0)] public IntPtr RightPanelPtr;
+        [FieldOffset(0x888)] public IntPtr MerchantPanelPtr; // async Merchant / Market buy panel
         [FieldOffset(0x730)] public IntPtr PassiveSkillTreePanel;
         [FieldOffset(0x7C8)] public IntPtr MapParentPtr;
         [FieldOffset(0x988)] public IntPtr WorldMapPanelPtr;

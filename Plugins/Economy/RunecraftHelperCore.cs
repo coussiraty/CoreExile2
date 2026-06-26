@@ -1,4 +1,4 @@
-namespace RunecraftHelper
+namespace Economy
 {
     using System;
     using System.Collections.Generic;
@@ -10,8 +10,18 @@ namespace RunecraftHelper
     using ImGuiNET;
     using Newtonsoft.Json;
 
-    public sealed partial class RunecraftHelperCore : Plugin<RunecraftHelperSettings>
+    public sealed partial class RunecraftHelperCore
     {
+        // Driven by the Economy plugin: this is a module, not a standalone plugin. These
+        // mirror what the Plugin<T> base used to provide (set by Economy before OnEnable).
+        public IContext Ctx = null!;
+        public string DirectoryPath = string.Empty;
+        public RunecraftHelperSettings Settings = new();
+
+        // Set by Economy each frame so the price chip matches the shared style (overrides the
+        // per-value ColorMode tint, keeping every Economy pricer visually identical).
+        public uint StandardTextColor;
+
         // Fixed UI path through PoE2 0.5.x's Runeshape Combinations panel:
         //   GameUi → window-container → ? → ? → ? → recipes-container
         // Child indices wiggle across game restarts, but each UiElement's Flags field encodes
@@ -96,8 +106,6 @@ namespace RunecraftHelper
         private int handlePid;
 
         private readonly List<Recipe> recipes = new();
-        private readonly PriceCache priceCache = new();
-        private DateTime nextAutoRefreshCheckUtc = DateTime.MinValue;
 
         // {localizedName → (metaId, ddsArt)}, built once per game session from BaseItemTypes.
         // metaId  = BaseItemType.Id last segment  — matches poe.ninja's tiered key for shared-icon
@@ -108,13 +116,12 @@ namespace RunecraftHelper
         private Dictionary<string, (string MetaId, string DdsArt)> nameToArtId = new(StringComparer.Ordinal);
 
         private string SettingPathname => Path.Join(this.DirectoryPath, "config", "settings.txt");
-        private string PriceCachePathname => Path.Join(this.DirectoryPath, "config", "prices.json");
 
         // Metadata substring identifying the persistent monolith device entity (used by the
         // Monolith reward window in RunecraftHelperCore.MonolithRewards.cs).
         private const string MonolithDevicePath = "Expedition2Encounter";
 
-        public override void OnEnable(bool isGameAttached)
+        public void OnEnable(bool isGameAttached)
         {
             if (File.Exists(this.SettingPathname))
             {
@@ -122,39 +129,24 @@ namespace RunecraftHelper
                 this.Settings = JsonConvert.DeserializeObject<RunecraftHelperSettings>(content)
                                 ?? new RunecraftHelperSettings();
             }
-
-            var fresh = this.priceCache.TryLoadFromDisk(this.PriceCachePathname, this.Settings.CacheTtlMinutes);
-            if (!fresh)
-                this.priceCache.StartRefresh(this.Settings.League, this.PriceCachePathname);
         }
 
-        public override void OnDisable() => this.ResetHandle();
+        public void OnDisable() => this.ResetHandle();
 
-        public override void SaveSettings()
+        public void SaveSettings()
         {
             Directory.CreateDirectory(Path.GetDirectoryName(this.SettingPathname)!);
-            this.Settings.LastSyncUtc = this.priceCache.LastSyncUtc;
             File.WriteAllText(this.SettingPathname, JsonConvert.SerializeObject(this.Settings, Formatting.Indented));
         }
 
-        public override void DrawSettings()
+        public void DrawSettings()
         {
-            ImGui.TextWrapped("RunecraftHelper: while the in-game Runeshape Combinations panel is open, the " +
-                              "poe.ninja Exalted price is drawn on the right edge of each visible reward row. " +
-                              "The reward name shown is the game's own (any client language).");
+            ImGui.TextWrapped("Prices the in-game Runeshape Combinations panel and the Expedition monolith " +
+                              "rewards, using the Economy league / display currency / price chip above. The reward " +
+                              "name shown is the game's own (any client language).");
 
             ImGui.Spacing();
-            ImGui.Separator();
-
-            ImGui.InputText("League", ref this.Settings.League, 64);
-            ImGui.SliderInt("Refresh interval (min)", ref this.Settings.CacheTtlMinutes, 5, 60);
-
-            int colorMode = (int)this.Settings.ColorMode;
-            if (ImGui.Combo("Price color", ref colorMode,
-                    "Off\0Relative (vs. median on screen)\0Absolute (Exalted thresholds)\0"))
-                this.Settings.ColorMode = (RewardColorMode)colorMode;
-
-            ImGui.SliderFloat("Price X offset", ref this.Settings.OverlayXOffset, -400f, 400f, "%.0f px");
+            ImGui.SliderFloat("Recipe price X offset", ref this.Settings.OverlayXOffset, -400f, 400f, "%.0f px");
 
             ImGui.Spacing();
             ImGui.SeparatorText("Monolith rewards");
@@ -193,39 +185,16 @@ namespace RunecraftHelper
                     "for reporting a game-vs-plugin mismatch.");
 
             ImGui.Spacing();
-
-            var status = this.priceCache.Status;
-            var lastSync = this.priceCache.LastSyncUtc;
-            string statusText = status switch
-            {
-                PriceSyncStatus.Syncing => "syncing…",
-                PriceSyncStatus.Ready => lastSync == DateTime.MinValue
-                    ? "ready (no data yet)"
-                    : $"updated {FormatRelative(lastSync)} ago",
-                PriceSyncStatus.Error => $"error: {this.priceCache.LastError}",
-                _ => "idle",
-            };
-
-            ImGui.Text($"Status: {statusText}");
-            ImGui.Text($"Items cached: {this.priceCache.PriceCount}");
-            if (this.priceCache.DivineToExaltedRate > 0)
-                ImGui.Text($"1 Divine = {this.priceCache.DivineToExaltedRate:F2} Exalted");
-
-            ImGui.BeginDisabled(status == PriceSyncStatus.Syncing);
-            if (ImGui.Button("Refresh now"))
-                this.priceCache.StartRefresh(this.Settings.League, this.PriceCachePathname);
-            ImGui.EndDisabled();
+            ImGui.TextDisabled($"Uses the Economy price data ({PoeNinjaPriceFetcher.LoadedItemCount} items loaded).");
         }
 
-        public override void DrawUI()
+        public void DrawUI()
         {
             if (!this.Ctx.Game.IsInGame)
             {
                 this.recipes.Clear();
                 return;
             }
-
-            this.MaybeAutoRefreshPrices();
 
             // When neither the game nor GameHelper is the foreground window the game hides its
             // panels; our overlay must follow suit, otherwise the price text floats over the
@@ -502,21 +471,31 @@ namespace RunecraftHelper
 
         // ── Price refresh polling ─────────────────────────────────────────
 
-        // Cheap once-a-minute poll: if the cache is older than the configured TTL and no sync is
-        // already in flight, kick one off. The first refresh after OnEnable is initiated there;
-        // this only handles long-lived sessions where the TTL eventually expires.
-        private void MaybeAutoRefreshPrices()
+        // Price lookups go through the Economy's single PoeNinjaPriceFetcher (no separate runecraft
+        // cache). Values come back in Exalted (display currency 1). The metaId / dds-art keys route
+        // through GetPrice's path-basename resolution (DefaultPathBasenames + the fetched art→name index).
+        private static bool TryGetExaltedByName(string name, out double exalted)
         {
-            var now = DateTime.UtcNow;
-            if (now < this.nextAutoRefreshCheckUtc) return;
-            this.nextAutoRefreshCheckUtc = now.AddMinutes(1);
-
-            if (this.priceCache.Status == PriceSyncStatus.Syncing) return;
-            var ttl = TimeSpan.FromMinutes(Math.Max(1, this.Settings.CacheTtlMinutes));
-            if (this.priceCache.LastSyncUtc != DateTime.MinValue && now - this.priceCache.LastSyncUtc < ttl) return;
-
-            this.priceCache.StartRefresh(this.Settings.League, this.PriceCachePathname);
+            exalted = 0;
+            if (string.IsNullOrEmpty(name)) return false;
+            var p = PoeNinjaPriceFetcher.GetPrice(name, null, null, null, name);
+            if (p == null) return false;
+            exalted = PoeNinjaPriceFetcher.GetDisplayPrice(p, 1).Value;
+            return exalted > 0;
         }
+
+        private static bool TryGetExaltedByArt(string artId, out double exalted)
+        {
+            exalted = 0;
+            if (string.IsNullOrEmpty(artId)) return false;
+            var p = PoeNinjaPriceFetcher.GetPrice(artId, null, artId, null, null);
+            if (p == null) return false;
+            exalted = PoeNinjaPriceFetcher.GetDisplayPrice(p, 1).Value;
+            return exalted > 0;
+        }
+
+        private static bool TryGetNameByArt(string artId, out string name) =>
+            PoeNinjaPriceFetcher.TryResolveDisplayName(artId, out name);
 
         // ── Drawing (overlay) ─────────────────────────────────────────────
         //
@@ -620,7 +599,7 @@ namespace RunecraftHelper
                 }
 
                 var text = FormatExalted(row.Total);
-                uint color = this.PickColor(row.Total, median);
+                var color = this.StandardTextColor != 0u ? this.StandardTextColor : this.PickColor(row.Total, median);
 
                 // Scale the price text to the row height so it reads at any UI scale.
                 float fontPx = Math.Clamp(row.Size.Y * 0.5f, 12f, 40f);
@@ -630,10 +609,7 @@ namespace RunecraftHelper
                 float x = row.Pos.X + row.Size.X - ts.X - padding + this.Settings.OverlayXOffset;
                 float y = row.Pos.Y + (row.Size.Y - ts.Y) * 0.5f;
                 var at = new Vector2(x, y);
-                var bgPad = new Vector2(4f * k, 2f * k);
-                drawList.AddRectFilled(at - bgPad, at + ts + bgPad, ColorPriceBg, 3f * k);
-                drawList.AddText(font, fontPx, at + new Vector2(1f, 1f), ColorShadow, text);
-                drawList.AddText(font, fontPx, at, color, text);
+                PriceLabel.Draw(drawList, font, fontPx, at, text, color);
             }
         }
 
@@ -908,28 +884,28 @@ namespace RunecraftHelper
             {
                 int gemLevel = UncutGemLevel(r.MetaId);
                 if (gemLevel >= 0 && !string.IsNullOrEmpty(r.DdsArt) &&
-                    this.priceCache.TryGetPriceByArtId(r.DdsArt + gemLevel.ToString(), out unit) && unit > 0)
+                    TryGetExaltedByArt(r.DdsArt + gemLevel.ToString(), out unit) && unit > 0)
                     return true;
                 unit = 0;
                 return false;
             }
 
-            if (!string.IsNullOrEmpty(r.MetaId) && this.priceCache.TryGetPriceByArtId(r.MetaId, out unit) && unit > 0)
+            if (!string.IsNullOrEmpty(r.MetaId) && TryGetExaltedByArt(r.MetaId, out unit) && unit > 0)
                 return true;
 
             int level = LevelFromMetaId(r.MetaId);
             if (level >= 0)
             {
                 if (!string.IsNullOrEmpty(r.DdsArt) &&
-                    this.priceCache.TryGetPriceByArtId(r.DdsArt + level.ToString(), out unit) && unit > 0)
+                    TryGetExaltedByArt(r.DdsArt + level.ToString(), out unit) && unit > 0)
                     return true;
             }
-            else if (!string.IsNullOrEmpty(r.DdsArt) && this.priceCache.TryGetPriceByArtId(r.DdsArt, out unit) && unit > 0)
+            else if (!string.IsNullOrEmpty(r.DdsArt) && TryGetExaltedByArt(r.DdsArt, out unit) && unit > 0)
             {
                 return true;
             }
 
-            if (this.priceCache.TryGetExaltedPrice(r.Name, out unit) && unit > 0)
+            if (TryGetExaltedByName(r.Name, out unit) && unit > 0)
                 return true;
             unit = 0;
             return false;
@@ -943,20 +919,20 @@ namespace RunecraftHelper
             {
                 int gemLevel = UncutGemLevel(r.MetaId);
                 if (gemLevel >= 0 && !string.IsNullOrEmpty(r.DdsArt) &&
-                    this.priceCache.TryGetNameByArtId(r.DdsArt + gemLevel.ToString(), out name) && !string.IsNullOrEmpty(name))
+                    TryGetNameByArt(r.DdsArt + gemLevel.ToString(), out name) && !string.IsNullOrEmpty(name))
                     return true;
                 name = string.Empty;
                 return false;
             }
 
-            if (!string.IsNullOrEmpty(r.MetaId) && this.priceCache.TryGetNameByArtId(r.MetaId, out name) && !string.IsNullOrEmpty(name))
+            if (!string.IsNullOrEmpty(r.MetaId) && TryGetNameByArt(r.MetaId, out name) && !string.IsNullOrEmpty(name))
                 return true;
 
             int level = LevelFromMetaId(r.MetaId);
             string? artKey = string.IsNullOrEmpty(r.DdsArt)
                 ? null
                 : (level >= 0 ? r.DdsArt + level.ToString() : r.DdsArt);
-            if (artKey != null && this.priceCache.TryGetNameByArtId(artKey, out name) && !string.IsNullOrEmpty(name))
+            if (artKey != null && TryGetNameByArt(artKey, out name) && !string.IsNullOrEmpty(name))
                 return true;
 
             name = string.Empty;

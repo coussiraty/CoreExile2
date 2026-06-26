@@ -4,6 +4,7 @@
 
 namespace MapKillCounter
 {
+    using System.Collections.Generic;
     using System.Numerics;
     using ExileBridge;
 
@@ -25,6 +26,9 @@ namespace MapKillCounter
 
         /// <summary>A minimal clock only.</summary>
         TimerOnly,
+
+        /// <summary>A sleek gold "chip": total kills + map time + kills/hour.</summary>
+        Chip,
     }
 
     /// <summary>Persisted MapKillCounter settings (public fields so ImGui can edit by ref).</summary>
@@ -33,11 +37,17 @@ namespace MapKillCounter
         /// <summary>Show the per-map overlay window.</summary>
         public bool ShowOverlay = true;
 
-        /// <summary>Map overlay mode (full or timer-only).</summary>
-        public MapOverlayMode OverlayMode = MapOverlayMode.Full;
+        /// <summary>Map overlay mode (chip, full, or timer-only).</summary>
+        public MapOverlayMode OverlayMode = MapOverlayMode.Chip;
 
         /// <summary>Show the separate session-totals overlay window.</summary>
         public bool ShowSessionOverlay;
+
+        /// <summary>Show the compact "currency collected this map" pill.</summary>
+        public bool ShowCurrencyPill = true;
+
+        /// <summary>Currency pill overlay position.</summary>
+        public Vector2 CurrencyPillPosition = new(40f, 170f);
 
         /// <summary>Pause the map timer while in town/hideout.</summary>
         public bool PauseTimerInTownOrHideout = true;
@@ -92,5 +102,39 @@ namespace MapKillCounter
 
         /// <summary>Unique-rarity kill color.</summary>
         public Vector4 UniqueColor = new(1f, 0.55f, 0.1f, 1f);
+    }
+
+    /// <summary>One persisted map run, written to <c>config/history.json</c>.</summary>
+    public sealed class MapRecord
+    {
+        /// <summary>UTC timestamp (ISO 8601) when the map ended.</summary>
+        public string TimestampUtc { get; set; } = string.Empty;
+
+        /// <summary>Area name.</summary>
+        public string Area { get; set; } = string.Empty;
+
+        /// <summary>Map duration in seconds.</summary>
+        public double DurationSeconds { get; set; }
+
+        /// <summary>Normal-rarity kills.</summary>
+        public int KillsNormal { get; set; }
+
+        /// <summary>Magic-rarity kills.</summary>
+        public int KillsMagic { get; set; }
+
+        /// <summary>Rare-rarity kills.</summary>
+        public int KillsRare { get; set; }
+
+        /// <summary>Unique-rarity kills.</summary>
+        public int KillsUnique { get; set; }
+
+        /// <summary>Total kills.</summary>
+        public int KillsTotal { get; set; }
+
+        /// <summary>Currency collected this map: display name -> count.</summary>
+        public Dictionary<string, int> Currency { get; set; } = new();
+
+        /// <summary>Total currency stacks collected.</summary>
+        public int CurrencyTotal { get; set; }
     }
 }

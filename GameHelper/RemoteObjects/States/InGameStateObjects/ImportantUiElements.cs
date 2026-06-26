@@ -107,6 +107,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
             this.Atlas = new(IntPtr.Zero, this.rootCache);
             this.LeftPanel = new(IntPtr.Zero, this.rootCache);
             this.RightPanel = new(IntPtr.Zero, this.rootCache);
+            this.MerchantPanel = new(IntPtr.Zero, this.rootCache);
             this.ChatParent = new(IntPtr.Zero, this.rootCache);
 
             this.SkillTreeNodesUiElements = new();
@@ -200,6 +201,13 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
         public UiElementBase RightPanel { get; }
 
         /// <summary>
+        ///     Gets the currently-open async Merchant / Market buy panel (a grid of other players'
+        ///     listed items you can instant-buy). Only <see cref="UiElementBase.IsVisible" /> while
+        ///     it is open. UiRoot manager -> 0x888.
+        /// </summary>
+        public UiElementBase MerchantPanel { get; }
+
+        /// <summary>
         ///     Gets a value indicating whether any large blocking panel is currently open
         ///     (a left/right side panel, the passive skill tree, or the world-travel map).
         ///     Useful for overlays that should hide world-space drawing while the player is in a menu.
@@ -207,6 +215,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
         public bool IsAnyLargePanelOpen =>
             this.LeftPanel.IsVisible ||
             this.RightPanel.IsVisible ||
+            this.MerchantPanel.IsVisible ||
             this.WorldMapPanel.IsVisible ||
             this.SekhemasTrialMapPanel.IsVisible ||
             this.IsPassiveSkillTreeOpen;
@@ -351,6 +360,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
             this.Atlas.Address = IntPtr.Zero;
             this.LeftPanel.Address = IntPtr.Zero;
             this.RightPanel.Address = IntPtr.Zero;
+            this.MerchantPanel.Address = IntPtr.Zero;
             this.ChatParent.Address = IntPtr.Zero;
             this.atlasMaps.Clear();
             this.atlasMapCacheFrameCounter = int.MaxValue;
@@ -372,6 +382,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
                 this.UpdateWorldMapPanelAddresses();
                 this.LeftPanel.Address = IntPtr.Zero;
                 this.RightPanel.Address = IntPtr.Zero;
+                this.MerchantPanel.Address = IntPtr.Zero;
                 this.ChatParent.Address = IntPtr.Zero;
                 this.passiveskilltreenodes.Address = IntPtr.Zero;
                 this.sekhemasTrialMapPanel.Address = IntPtr.Zero;
@@ -388,6 +399,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
                 this.UpdateWorldMapPanelAddresses();
                 this.LeftPanel.Address = ValidUiElementOrZero(data1.LeftPanelPtr);
                 this.RightPanel.Address = ValidUiElementOrZero(data1.RightPanelPtr);
+                this.MerchantPanel.Address = ValidUiElementOrZero(data1.MerchantPanelPtr);
                 this.ChatParent.Address = data1.ChatParentPtr;
                 this.passiveskilltreenodes.Address = ValidUiElementOrZero(data4);
                 this.updatePassiveSkillTreeData();

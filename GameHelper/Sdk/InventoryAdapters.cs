@@ -137,11 +137,13 @@ namespace GameHelper.Sdk
 
                 var left = gameUi.LeftPanel;
                 var right = gameUi.RightPanel;
+                var merchant = gameUi.MerchantPanel;
                 var leftVisible = IsValidUiElement(left);
                 var rightVisible = IsValidUiElement(right);
+                var merchantVisible = IsValidUiElement(merchant);
 
                 // Resolve real localized item names from the game's BaseItemTypes table (once).
-                if (!ItemBaseNames.Built && (leftVisible || rightVisible))
+                if (!ItemBaseNames.Built && (leftVisible || rightVisible || merchantVisible))
                 {
                     ItemBaseNames.EnsureBuilt(
                         left?.Address ?? IntPtr.Zero,
@@ -163,6 +165,11 @@ namespace GameHelper.Sdk
                     WalkCollect(right, null, ItemPanel.Right, candidates, visited, 0);
                 }
 
+                if (merchantVisible)
+                {
+                    WalkCollect(merchant, null, ItemPanel.Merchant, candidates, visited, 0);
+                }
+
                 // Each item is usually referenced by several UI elements: the visible slot, an
                 // inner image, and — on premium tabs — off-panel "ghost" copies positioned far
                 // off-screen. For each unique item pick the single element whose rect actually
@@ -171,6 +178,7 @@ namespace GameHelper.Sdk
                 // both the double-price dedup AND the old all-or-nothing special-tab suppression.
                 var leftRect = PanelRect(leftVisible ? left : null);
                 var rightRect = PanelRect(rightVisible ? right : null);
+                var merchantRect = PanelRect(merchantVisible ? merchant : null);
 
                 var best = new Dictionary<IntPtr, Candidate>();
                 foreach (var c in candidates)
@@ -179,7 +187,7 @@ namespace GameHelper.Sdk
                     {
                         best[c.ItemPtr] = c;
                     }
-                    else if (IsOnPanel(c, leftRect, rightRect) && !IsOnPanel(prev, leftRect, rightRect))
+                    else if (IsOnPanel(c, leftRect, rightRect, merchantRect) && !IsOnPanel(prev, leftRect, rightRect, merchantRect))
                     {
                         best[c.ItemPtr] = c;
                     }
@@ -188,7 +196,7 @@ namespace GameHelper.Sdk
                 var dropped = 0;
                 foreach (var c in best.Values)
                 {
-                    if (!IsOnPanel(c, leftRect, rightRect) || c.Size.X <= 0f || c.Size.Y <= 0f)
+                    if (!IsOnPanel(c, leftRect, rightRect, merchantRect) || c.Size.X <= 0f || c.Size.Y <= 0f)
                     {
                         dropped++;
                         continue;
@@ -225,9 +233,14 @@ namespace GameHelper.Sdk
         }
 
         /// <summary>True when the candidate's center lies inside its panel's on-screen rect.</summary>
-        private static bool IsOnPanel(Candidate c, (Vector2 min, Vector2 max)? leftRect, (Vector2 min, Vector2 max)? rightRect)
+        private static bool IsOnPanel(Candidate c, (Vector2 min, Vector2 max)? leftRect, (Vector2 min, Vector2 max)? rightRect, (Vector2 min, Vector2 max)? merchantRect)
         {
-            var rect = c.Panel == ItemPanel.Left ? leftRect : rightRect;
+            var rect = c.Panel switch
+            {
+                ItemPanel.Left => leftRect,
+                ItemPanel.Merchant => merchantRect,
+                _ => rightRect,
+            };
             if (rect == null)
             {
                 return false;
@@ -475,40 +488,48 @@ namespace GameHelper.Sdk
         {
             try
             {
-                var item = new HostItem(c.ItemPtr);
-                var path = item.Path;
-                if (string.IsNullOrEmpty(path) ||
-                    !path.StartsWith("Metadata/Items", StringComparison.OrdinalIgnoreCase))
-                {
-                    return null;
-                }
-
-                // Resolve the real localized display name from the game's BaseItemTypes table.
-                var slash = path.LastIndexOf('/');
-                var baseName = slash >= 0 && slash < path.Length - 1 ? path[(slash + 1)..] : path;
-                var displayName = ItemBaseNames.TryGetName(baseName, out var resolved) ? resolved : string.Empty;
-
-                var rarity = Rarity.Normal;
-                var modLines = new List<string>();
-                if (item.TryGetComponent<HostMods>(out var mods) && mods != null)
-                {
-                    rarity = MapRarity(mods.Rarity);
-                    AddModLines(modLines, mods.ImplicitMods);
-                    AddModLines(modLines, mods.ExplicitMods);
-                    AddModLines(modLines, mods.EnchantMods);
-                }
-
-                var stack = item.TryGetComponent<HostStack>(out var stackComp) && stackComp != null && stackComp.Count > 1
-                    ? stackComp.Count
-                    : 1;
-
-                var sdkItem = new InventoryItemAdapter(path, displayName, rarity, stack, modLines);
-                return new ItemSlotAdapter(c.Pos, c.Size, c.Panel, sdkItem);
+                var sdkItem = BuildItem(new HostItem(c.ItemPtr));
+                return sdkItem == null ? null : new ItemSlotAdapter(c.Pos, c.Size, c.Panel, sdkItem);
             }
             catch
             {
                 return null;
             }
+        }
+
+        /// <summary>
+        ///     Builds an SDK item view from a host item: verifies the metadata path, resolves the
+        ///     localized display name from the game's BaseItemTypes table, and pulls rarity /
+        ///     mod lines / stack count. Returns null when the item does not resolve to a real item.
+        /// </summary>
+        private static IInventoryItem? BuildItem(HostItem item)
+        {
+            var path = item.Path;
+            if (string.IsNullOrEmpty(path) ||
+                !path.StartsWith("Metadata/Items", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var slash = path.LastIndexOf('/');
+            var baseName = slash >= 0 && slash < path.Length - 1 ? path[(slash + 1)..] : path;
+            var displayName = ItemBaseNames.TryGetName(baseName, out var resolved) ? resolved : string.Empty;
+
+            var rarity = Rarity.Normal;
+            var modLines = new List<string>();
+            if (item.TryGetComponent<HostMods>(out var mods) && mods != null)
+            {
+                rarity = MapRarity(mods.Rarity);
+                AddModLines(modLines, mods.ImplicitMods);
+                AddModLines(modLines, mods.ExplicitMods);
+                AddModLines(modLines, mods.EnchantMods);
+            }
+
+            var stack = item.TryGetComponent<HostStack>(out var stackComp) && stackComp != null && stackComp.Count > 1
+                ? stackComp.Count
+                : 1;
+
+            return new InventoryItemAdapter(path, displayName, rarity, stack, modLines);
         }
 
         /// <summary>

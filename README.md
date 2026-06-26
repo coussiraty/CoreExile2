@@ -8,13 +8,13 @@
 
 **A Path of Exile 2 overlay that does the boring parts for you.**
 
-Map smarter, loot faster, and never alt-tab to a price site again. CoreExile2 reads the running game, draws an ImGui overlay on top, and loads 17 feature plugins at runtime — and one self-updating launcher keeps the whole thing current.
+Map smarter, loot faster, and never alt-tab to a price site again. CoreExile2 reads the running game, draws an ImGui overlay on top, and loads 16 feature plugins at runtime — and one self-updating launcher keeps the whole thing current.
 
 ![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows&logoColor=white)
 ![Game](https://img.shields.io/badge/Path%20of%20Exile%202-supported-c79030)
 ![Version](https://img.shields.io/badge/version-2.5.0-success)
-![Plugins](https://img.shields.io/badge/plugins-17-blue)
+![Plugins](https://img.shields.io/badge/plugins-16-blue)
 
 </div>
 
@@ -54,9 +54,8 @@ Jump to the part you came for. Every plugin below ships today.
 
 | Plugin | What it does |
 | --- | --- |
-| **StashValue** | Prices *every* item in an open stash or inventory, right on each slot — resolving each item's **real localized name** from the game's `BaseItemTypes` table and pricing it from **poe.ninja + poe2scout** (merged), with the league and exchange rates auto-resolved. |
-| **RunecraftHelper** | Instantly prices Expedition / runecraft rewards so you pick the right one — language-independent via `BaseItemTypes`. |
-| **MapKillCounter** | Live kill count and **kills/hour** for the current map — know if your farm is actually fast. |
+| **Economy** | One pricing engine for everything — it tags items in an open **stash / inventory**, **Ritual** tribute-shop rewards, and **Runecraft / Expedition** monolith rewards, right on each slot. Names resolve from the game's own `BaseItemTypes` (any client language) and prices merge **poe.ninja + poe2scout**, with league and exchange rates auto-resolved. |
+| **MapKillCounter** | Live kill count, **kills/hour**, and **currency-dropped** tracking for the current map — with on-disk run history, so you know if a farm is actually fast *and* profitable. |
 
 ### ⚔️ Combat & automation
 
@@ -82,8 +81,6 @@ Jump to the part you came for. Every plugin below ships today.
 | **DebugOverlay** | UI-element and memory inspector for poking at game state. |
 | **WorldDrawing** | World-space drawing utilities for prototyping visual features. |
 | **ExileBridgeSample** · **SamplePluginTemplate** | Copy-paste starting points for your own plugin. |
-
-> 🚧 **In development:** **TradeHelper** is experimental and not yet a shipping plugin.
 
 ---
 
@@ -131,11 +128,10 @@ CoreExile2 stands on a lot of other people's work.
 
 Several bundled plugins are **adaptations of other people's work**, ported to ExileBridge with full credit to the original authors — only the SDK wiring was changed:
 
-| Plugin | Original author |
+| Plugin | Original author(s) |
 | --- | --- |
-| **StashValue** | [zx0CF1/StashValue](https://github.com/zx0CF1/StashValue) |
+| **Economy** | [zx0CF1/StashValue](https://github.com/zx0CF1/StashValue) · [yokkenUA/RunecraftHelper](https://github.com/yokkenUA/RunecraftHelper) · [AlexanderHel/RitualHelper](https://github.com/AlexanderHel/RitualHelper) |
 | **MapKillCounter** | [MordWraith/MapKillCounter](https://github.com/MordWraith/MapKillCounter) |
-| **RunecraftHelper** | [yokkenUA/RunecraftHelper](https://github.com/yokkenUA/RunecraftHelper) |
 | **SekhemaHelper** | [yokkenUA/SekhemaHelper](https://github.com/yokkenUA/SekhemaHelper) |
 
 If you're one of these authors and would like different credit, additional attribution, or removal, please [open an issue](https://github.com/coussiraty/CoreExile2/issues).

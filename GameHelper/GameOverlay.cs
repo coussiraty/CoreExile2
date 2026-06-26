@@ -35,6 +35,7 @@ namespace GameHelper
             OverlayKiller.InitializeCoroutines();
             NearbyVisualization.InitializeCoroutines();
             KrangledPassiveDetector.InitializeCoroutines();
+            ItemSlotVisualization.InitializeCoroutines();
         }
 
         /// <summary>

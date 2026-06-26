@@ -56,6 +56,7 @@ namespace GameHelper.Settings
         {
             HideOnStartCheck();
             CoroutineHandler.Start(SaveCoroutine());
+            CoroutineHandler.Start(AutoSaveCoroutine());
             Core.CoroutinesRegistrar.Add(CoroutineHandler.Start(
                 RenderCoroutine(),
                 "[Settings] Draw Core/Plugin settings",
@@ -1005,6 +1006,20 @@ namespace GameHelper.Settings
             {
                 yield return new Wait(GameHelperEvents.TimeToSaveAllSettings);
                 JsonHelper.SafeToFile(Core.GHSettings, State.CoreSettingFile);
+            }
+        }
+
+        /// <summary>
+        ///     Periodically raises <see cref="GameHelperEvents.TimeToSaveAllSettings" /> so core and
+        ///     plugin settings persist even if the process is killed or crashes without a graceful
+        ///     close / F12-hide (which are the only other triggers).
+        /// </summary>
+        private static IEnumerator<Wait> AutoSaveCoroutine()
+        {
+            while (true)
+            {
+                yield return new Wait(10d);
+                CoroutineHandler.RaiseEvent(GameHelperEvents.TimeToSaveAllSettings);
             }
         }
     }

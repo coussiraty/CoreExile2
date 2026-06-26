@@ -2,13 +2,13 @@
 // Copyright (c) None. All rights reserved.
 // </copyright>
 
-namespace StashValue
+namespace Economy
 {
     using System.Numerics;
     using ExileBridge;
 
-    /// <summary>Persisted StashValue settings (public fields so ImGui can edit by ref).</summary>
-    public sealed class StashValueSettings : IPluginSettings
+    /// <summary>Persisted Economy (pricing) settings (public fields so ImGui can edit by ref).</summary>
+    public sealed class EconomySettings : IPluginSettings
     {
         /// <summary>Draw value labels over stash items (left panel).</summary>
         public bool ShowOverlay = true;
@@ -16,8 +16,14 @@ namespace StashValue
         /// <summary>Draw value labels over inventory items (right panel).</summary>
         public bool ShowInventoryOverlay;
 
-        /// <summary>Draw debug boxes (with item base names) over detected item slots.</summary>
-        public bool ShowDebugInfo;
+        /// <summary>Draw value labels on Ritual Tribute Shop reward tiles.</summary>
+        public bool ShowRitualPrices = true;
+
+        /// <summary>Draw value labels on Runecraft / Expedition reward rows.</summary>
+        public bool ShowRunecraftPrices = true;
+
+        /// <summary>Log ritual rewards that couldn't be priced (to build art→name fallbacks).</summary>
+        public bool RitualDebugLog;
 
         /// <summary>Minimum value (in the display currency) for an item to get a label.</summary>
         public float MinValueEx;

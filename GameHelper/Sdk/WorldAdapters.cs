@@ -160,6 +160,23 @@ namespace GameHelper.Sdk
         public string ItemPath => this.worldItem.ItemPath;
 
         /// <inheritdoc />
+        public string DisplayName
+        {
+            get
+            {
+                var path = this.worldItem.ItemPath;
+                if (string.IsNullOrEmpty(path))
+                {
+                    return string.Empty;
+                }
+
+                var slash = path.LastIndexOf('/');
+                var baseName = slash >= 0 && slash < path.Length - 1 ? path[(slash + 1)..] : path;
+                return ItemBaseNames.TryGetName(baseName, out var name) ? name : string.Empty;
+            }
+        }
+
+        /// <inheritdoc />
         public int StackCount => this.worldItem.StackCount;
 
         /// <inheritdoc />

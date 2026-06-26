@@ -1,4 +1,4 @@
-namespace RunecraftHelper
+namespace Economy
 {
     using System;
     using System.Collections.Generic;
@@ -692,7 +692,7 @@ namespace RunecraftHelper
             if (rec.reward != null && !string.IsNullOrEmpty(rec.reward.name))
             {
                 c.Reward = rec.reward.name;
-                if (this.priceCache.TryGetExaltedPrice(rec.reward.name, out var u) && u > 0)
+                if (TryGetExaltedByName(rec.reward.name, out var u) && u > 0)
                 {
                     c.UnitEx = u;
                     c.Priced = true;

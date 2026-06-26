@@ -120,6 +120,13 @@ namespace ExileBridge
         /// <summary>Gets the wrapped item's metadata path (e.g. <c>Metadata/Items/Currency/...</c>).</summary>
         string ItemPath { get; }
 
+        /// <summary>
+        ///     Gets the wrapped item's localized display name resolved from the game's BaseItemTypes
+        ///     table (e.g. "Chaos Orb"). Empty when the table is not read yet or the base is unknown;
+        ///     callers should fall back to <see cref="ItemPath" />.
+        /// </summary>
+        string DisplayName { get; }
+
         /// <summary>Gets the wrapped item's rarity.</summary>
         Rarity Rarity { get; }
 

@@ -15,6 +15,9 @@ namespace ExileBridge
 
         /// <summary>The right-side panel (the player inventory).</summary>
         Right,
+
+        /// <summary>The async Merchant / Market buy panel (other players' instant-buy listings).</summary>
+        Merchant,
     }
 
     /// <summary>
