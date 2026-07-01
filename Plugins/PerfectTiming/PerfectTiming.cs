@@ -13,20 +13,18 @@ namespace PerfectTiming
     using System.Threading.Tasks;
 
     /// <summary>
-    ///     PerfectTiming — auto hold+release for the Warrior "Perfect Strike".
-    ///
-    ///     The SDK doesn't expose the Actor component, so this reads it via raw memory to get the live
-    ///     AnimationId. Perfect Strike's charge shows as animation 461 (windup); the release outcome is
-    ///     463 (PERFECT) or 462 (normal). There is no continuous charge value in the reachable memory,
-    ///     so instead of reading a marker we anchor on the windup start (461) and release at a precise,
-    ///     tuned delay — reading the 463/462 outcome as feedback to auto-tune toward perfect.
+    ///     PerfectTiming — auto hold+release for charge/perfect skills (Warrior "Perfect Strike",
+    ///     Ranger "Snipe", etc.). Each <see cref="SkillProfile" /> anchors on its windup AnimationId
+    ///     and releases at a precise, tuned delay via a Stopwatch, reading the perfect/normal outcome
+    ///     AnimationId as feedback to auto-tune. The SDK doesn't expose the Actor component, so the
+    ///     live AnimationId is read via raw memory.
     /// </summary>
     public sealed class PerfectTiming : Plugin<PerfectTimingSettings>
     {
         // ActorOffset (from GameOffsets.Objects.Components.ActorOffset).
         private const int EntityDetailsOffset = 0x08;
         private const int ActorAnimationIdOffset = 0x8B0;
-        private const int ActorActiveSkillsFirst = 0xB08; // StdVector: First @ +0, Last @ +8
+        private const int ActorActiveSkillsFirst = 0xB08;
         private const int ActiveSkillStride = 0x10;
         private const int SkillUseStageOffset = 0x08;
         private const int SkillCastTypeOffset = 0x0C;
@@ -36,28 +34,15 @@ namespace PerfectTiming
         private const int ActorWindowStart = 0x880;
         private const int ActorWindowBytes = 0x80;
 
-        // Auto-tune bounds (ms) — walk the delay down from ceil, wrap when it under-shoots the window.
+        // Auto-tune: walk the delay down (misses cluster at max windup) and wrap when it under-shoots.
         private const int TuneStep = 8;
-        private const int TuneFloor = 380;
-        private const int TuneCeil = 560;
+        private const int TuneFloor = 300;
+        private const int TuneCeil = 620;
 
-        private enum Phase { Idle, WaitWindup, Charging, WaitOutcome }
+        private int capturingTriggerIdx = -1;
+        private int capturingSkillIdx = -1;
 
-        private Phase phase = Phase.Idle;
-        private long pressTicks;
-        private long outcomeStart;
-        private volatile bool releaseScheduled;
-        private volatile bool skillHeld;
-        private bool triggerWasDown;
-        private int consecMiss;
-
-        private int hits;
-        private int misses;
-        private bool lastPerfect;
-        private readonly Queue<bool> recent = new();
-
-        private bool capturingTrigger;
-        private bool capturingSkill;
+        private readonly List<int> recentAnims = new();
 
         private StreamWriter csv;
         private long logStartMs;
@@ -80,11 +65,41 @@ namespace PerfectTiming
                 var content = File.ReadAllText(this.SettingPathname);
                 this.Settings = JsonConvert.DeserializeObject<PerfectTimingSettings>(content) ?? this.Settings;
             }
+
+            this.Settings.Profiles ??= new List<SkillProfile>();
+            if (this.Settings.Profiles.Count == 0)
+            {
+                // Migrate the legacy single-skill (v1) config into the first profile.
+                this.Settings.Profiles.Add(new SkillProfile
+                {
+                    Name = "Perfect Strike",
+                    Enabled = true,
+                    TriggerKey = this.Settings.TriggerKey,
+                    SkillIsMouse = this.Settings.SkillIsMouse,
+                    SkillMouseButton = this.Settings.SkillMouseButton,
+                    SkillKey = this.Settings.SkillKey,
+                    WindupAnim = this.Settings.WindupAnim,
+                    PerfectAnim = this.Settings.PerfectAnim,
+                    EndAnim = this.Settings.EndAnim,
+                    ReleaseDelayMs = this.Settings.ReleaseDelayMs,
+                    RepeatWhileHeld = this.Settings.RepeatWhileHeld,
+                    AutoTune = this.Settings.AutoTune,
+                });
+            }
+
+            foreach (var p in this.Settings.Profiles)
+            {
+                p.Recent ??= new Queue<bool>();
+                if (p.ReleaseFraction < 0.55f || p.ReleaseFraction > 0.92f)
+                {
+                    p.ReleaseFraction = 0.8f; // recover from a bad auto-tune that ran to the edge
+                }
+            }
         }
 
         public override void OnDisable()
         {
-            this.ForceReleaseIfHeld();
+            this.ReleaseAllProfiles();
             this.StopLog();
             Mem.Close();
         }
@@ -101,8 +116,7 @@ namespace PerfectTiming
         {
             if (!this.Ctx.Game.IsInGame)
             {
-                this.ForceReleaseIfHeld();
-                this.phase = Phase.Idle;
+                this.ReleaseAllProfiles();
                 return;
             }
 
@@ -114,18 +128,44 @@ namespace PerfectTiming
             }
 
             var actor = ResolveComponent(player.Address, "Actor");
-            int animId = actor != IntPtr.Zero ? Mem.I32(actor + ActorAnimationIdOffset) : int.MinValue;
-
-            if (actor != IntPtr.Zero)
+            if (actor == IntPtr.Zero)
             {
-                this.UpdateAuto(animId);
+                this.ReleaseAllProfiles();
+                if (this.Settings.ShowProbe)
+                {
+                    this.DrawProbe(IntPtr.Zero, int.MinValue, new List<SkillInfo>(), null);
+                }
+
+                return;
+            }
+
+            int animId = Mem.I32(actor + ActorAnimationIdOffset);
+            this.TrackAnim(animId);
+
+            // Only drive input while the GAME is the foreground window — otherwise the synthetic
+            // key/mouse events would go to whatever other window has focus (settings, another app).
+            bool foreground = this.Ctx.Game.IsForeground;
+            foreach (var p in this.Settings.Profiles)
+            {
+                if (!this.Settings.AutoEnabled || !p.Enabled || !foreground)
+                {
+                    if (p.SkillHeld)
+                    {
+                        this.SkillUp(p);
+                    }
+
+                    p.Phase = 0;
+                    continue;
+                }
+
+                this.UpdateAuto(p, animId);
             }
 
             if (this.Settings.ShowProbe || this.csv != null)
             {
-                var skills = actor != IntPtr.Zero ? this.ReadSkills(actor) : new List<SkillInfo>();
+                var skills = this.ReadSkills(actor);
                 SkillInfo? target = PickTarget(skills, this.Settings.TargetSkillMatch);
-                if (this.csv != null && actor != IntPtr.Zero)
+                if (this.csv != null)
                 {
                     this.LogFrame(actor, animId, target);
                 }
@@ -137,136 +177,265 @@ namespace PerfectTiming
             }
         }
 
-        // ── Auto hold + release state machine ───────────────────────────────────────
-        private void UpdateAuto(int animId)
+        private void TrackAnim(int animId)
         {
-            bool triggerDown = this.Settings.TriggerKey != 0 && Input.IsKeyDown(this.Settings.TriggerKey);
-            bool edge = triggerDown && !this.triggerWasDown;
-            this.triggerWasDown = triggerDown;
-
-            if (!this.Settings.AutoEnabled)
+            if (this.recentAnims.Count == 0 || this.recentAnims[^1] != animId)
             {
-                if (this.phase != Phase.Idle)
+                this.recentAnims.Add(animId);
+                while (this.recentAnims.Count > 12)
                 {
-                    this.ForceReleaseIfHeld();
-                    this.phase = Phase.Idle;
+                    this.recentAnims.RemoveAt(0);
+                }
+            }
+        }
+
+        // ── Per-profile auto hold + release state machine ───────────────────────────
+        private void UpdateAuto(SkillProfile p, int animId)
+        {
+            bool triggerDown = p.TriggerKey != 0 && Input.IsKeyDown(p.TriggerKey);
+            bool edge = triggerDown && !p.TriggerWasDown;
+            p.TriggerWasDown = triggerDown;
+
+            long now = Stopwatch.GetTimestamp();
+            switch (p.Phase)
+            {
+                case 0: // Idle
+                    if (triggerDown && (p.RepeatWhileHeld || edge))
+                    {
+                        if (p.OnlyOnMonster && !this.HasLiveMonsterNearCursor(p.CursorRadius))
+                        {
+                            break; // cursor not on a live monster (looting / ground click) — don't attack
+                        }
+
+                        this.SkillDown(p);
+                        p.PressTicks = now;
+                        p.Phase = 1;
+                    }
+
+                    break;
+
+                case 1: // WaitWindup
+                    if (!triggerDown)
+                    {
+                        if (p.SkillHeld)
+                        {
+                            this.SkillUp(p);
+                        }
+
+                        p.Phase = 0;
+                    }
+                    else if (animId == p.WindupAnim)
+                    {
+                        p.WindupStartTicks = now;
+                        bool probe = p.ScaleToWindup && (p.WindupEst <= 0 || (p.StrikeCount % 20 == 0));
+                        p.ProbeStrike = probe;
+                        if (!probe)
+                        {
+                            int delay = p.ScaleToWindup
+                                ? (int)Math.Clamp(p.ReleaseFraction * p.WindupEst, 60, 3000)
+                                : p.ReleaseDelayMs;
+                            p.StrikeDelayMs = delay;
+                            this.ScheduleRelease(p, delay);
+                        }
+
+                        p.Phase = 2;
+                    }
+                    else if (ElapsedMs(p.PressTicks, now) > 700)
+                    {
+                        if (p.SkillHeld)
+                        {
+                            this.SkillUp(p);
+                        }
+
+                        p.Phase = 0;
+                    }
+
+                    break;
+
+                case 2: // Charging
+                    if (p.ProbeStrike)
+                    {
+                        // Probe: let the windup end on its own to measure its length (and fire one normal hit),
+                        // releasing the instant its outcome anim appears.
+                        if (animId == p.PerfectAnim || animId == p.EndAnim)
+                        {
+                            if (p.SkillHeld)
+                            {
+                                this.SkillUp(p);
+                            }
+
+                            long tOut = ElapsedMs(p.WindupStartTicks, now);
+                            p.WindupEst = p.WindupEst <= 0 ? tOut : ((0.5 * tOut) + (0.5 * p.WindupEst));
+                            p.StrikeCount++;
+                            p.ProbeStrike = false;
+                            this.EndCycle(p, triggerDown);
+                        }
+                        else if (ElapsedMs(p.WindupStartTicks, now) > 2500)
+                        {
+                            if (p.SkillHeld)
+                            {
+                                this.SkillUp(p);
+                            }
+
+                            p.Phase = 0;
+                        }
+                    }
+                    else if (!p.ReleaseScheduled)
+                    {
+                        p.OutcomeStart = now;
+                        p.Phase = 3;
+                    }
+
+                    break;
+
+                case 3: // WaitOutcome (timed release already fired)
+                    if (animId == p.PerfectAnim || animId == p.EndAnim)
+                    {
+                        long tOut = ElapsedMs(p.WindupStartTicks, now);
+                        // Opportunistic re-measure: if the game released before our scheduled delay
+                        // (attack speed went up), tOut is the shorter natural windup.
+                        if (p.ScaleToWindup && tOut < p.StrikeDelayMs - 40)
+                        {
+                            p.WindupEst = p.WindupEst <= 0 ? tOut : ((0.5 * tOut) + (0.5 * p.WindupEst));
+                        }
+
+                        this.RecordOutcome(p, animId == p.PerfectAnim, tOut);
+                        this.EndCycle(p, triggerDown);
+                    }
+                    else if (ElapsedMs(p.OutcomeStart, now) > 500)
+                    {
+                        this.EndCycle(p, triggerDown);
+                    }
+
+                    break;
+            }
+        }
+
+        // True if a live (non-friendly) monster is within `radius` screen pixels of the cursor.
+        private bool HasLiveMonsterNearCursor(float radius)
+        {
+            var mp = ImGui.GetMousePos();
+            float r2 = radius * radius;
+            foreach (var e in this.Ctx.Entities.Awake)
+            {
+                if (e == null || !e.IsValid || e.Type != EntityType.Monster)
+                {
+                    continue;
                 }
 
+                if (e.TryGetComponent<IPositioned>(out var pos) && pos.IsFriendly)
+                {
+                    continue;
+                }
+
+                if (!e.TryGetComponent<ILife>(out var life) || life.Health.Current <= 0)
+                {
+                    continue;
+                }
+
+                if (!e.TryGetComponent<IRender>(out var r))
+                {
+                    continue;
+                }
+
+                var wp = r.WorldPosition;
+                wp.Z -= r.ModelBounds.Z * 0.5f; // mid-body: better matches the cursor over the monster
+                var sp = this.Ctx.Render.WorldToScreen(wp);
+                if (Vector2.DistanceSquared(sp, mp) <= r2)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void EndCycle(SkillProfile p, bool triggerDown)
+        {
+            if (this.Settings.AutoEnabled && p.RepeatWhileHeld && triggerDown)
+            {
+                this.SkillDown(p);
+                p.PressTicks = Stopwatch.GetTimestamp();
+                p.Phase = 1;
+            }
+            else
+            {
+                p.Phase = 0;
+            }
+        }
+
+        private void RecordOutcome(SkillProfile p, bool perfect, long tOut)
+        {
+            p.StrikeCount++;
+            p.LastPerfect = perfect;
+            if (perfect)
+            {
+                p.Hits++;
+            }
+            else
+            {
+                p.Misses++;
+            }
+
+            p.Recent.Enqueue(perfect);
+            while (p.Recent.Count > 20)
+            {
+                p.Recent.Dequeue();
+            }
+
+            if (!p.AutoTune)
+            {
                 return;
             }
 
-            long now = Stopwatch.GetTimestamp();
-            switch (this.phase)
+            if (p.ScaleToWindup)
             {
-                case Phase.Idle:
-                    if (triggerDown && (this.Settings.RepeatWhileHeld || edge))
-                    {
-                        this.SkillDown();
-                        this.pressTicks = now;
-                        this.phase = Phase.WaitWindup;
-                    }
-
-                    break;
-
-                case Phase.WaitWindup:
-                    if (animId == this.Settings.WindupAnim)
-                    {
-                        this.ScheduleRelease(this.Settings.ReleaseDelayMs);
-                        this.phase = Phase.Charging;
-                    }
-                    else if (ElapsedMs(this.pressTicks, now) > 700)
-                    {
-                        // Windup never started (out of range / interrupted) — release and reset.
-                        this.ForceReleaseIfHeld();
-                        this.phase = Phase.Idle;
-                    }
-
-                    break;
-
-                case Phase.Charging:
-                    if (!this.releaseScheduled)
-                    {
-                        this.outcomeStart = now;
-                        this.phase = Phase.WaitOutcome;
-                    }
-
-                    break;
-
-                case Phase.WaitOutcome:
-                    if (animId == this.Settings.PerfectAnim)
-                    {
-                        this.RecordOutcome(true);
-                        this.EndCycle(triggerDown);
-                    }
-                    else if (animId == this.Settings.EndAnim)
-                    {
-                        this.RecordOutcome(false);
-                        this.EndCycle(triggerDown);
-                    }
-                    else if (ElapsedMs(this.outcomeStart, now) > 500)
-                    {
-                        // No clear outcome (interrupted) — don't score it.
-                        this.EndCycle(triggerDown);
-                    }
-
-                    break;
-            }
-        }
-
-        private void EndCycle(bool triggerDown)
-        {
-            if (this.Settings.AutoEnabled && this.Settings.RepeatWhileHeld && triggerDown)
-            {
-                this.SkillDown();
-                this.pressTicks = Stopwatch.GetTimestamp();
-                this.phase = Phase.WaitWindup;
-            }
-            else
-            {
-                this.phase = Phase.Idle;
-            }
-        }
-
-        private void RecordOutcome(bool perfect)
-        {
-            this.lastPerfect = perfect;
-            if (perfect)
-            {
-                this.hits++;
-            }
-            else
-            {
-                this.misses++;
-            }
-
-            this.recent.Enqueue(perfect);
-            while (this.recent.Count > 20)
-            {
-                this.recent.Dequeue();
-            }
-
-            if (this.Settings.AutoTune)
-            {
+                // Hill-climb the fraction on measured hit-rate: sample a window of strikes, then step in
+                // whatever direction improves the perfect rate (reverse when it gets worse). A single
+                // miss can't tell "too early" from "too late", so we tune on the rate, not per-miss.
+                p.WindowCount++;
                 if (perfect)
                 {
-                    this.consecMiss = 0;
+                    p.WindowHits++;
                 }
-                else if (++this.consecMiss >= 2)
+
+                if (p.WindowCount >= 8)
                 {
-                    this.consecMiss = 0;
-                    this.Settings.ReleaseDelayMs -= TuneStep;
-                    if (this.Settings.ReleaseDelayMs < TuneFloor)
+                    double rate = (double)p.WindowHits / p.WindowCount;
+                    if (p.TuneDir == 0)
                     {
-                        this.Settings.ReleaseDelayMs = TuneCeil;
+                        p.TuneDir = -1; // the perfect point sits below max, so probe downward first
                     }
+
+                    if (p.LastRate >= 0 && rate < p.LastRate - 0.05)
+                    {
+                        p.TuneDir = -p.TuneDir;
+                    }
+
+                    p.LastRate = rate;
+                    p.ReleaseFraction = (float)Math.Clamp(p.ReleaseFraction + (p.TuneDir * 0.03), 0.55, 0.95);
+                    p.WindowHits = 0;
+                    p.WindowCount = 0;
+                }
+            }
+            else if (perfect)
+            {
+                p.ConsecMiss = 0;
+            }
+            else if (++p.ConsecMiss >= 2)
+            {
+                p.ConsecMiss = 0;
+                p.ReleaseDelayMs -= TuneStep;
+                if (p.ReleaseDelayMs < TuneFloor)
+                {
+                    p.ReleaseDelayMs = TuneCeil;
                 }
             }
         }
 
-        // Precise release: wait exactly delayMs from windup-start, then send the skill key-up.
-        private void ScheduleRelease(int delayMs)
+        private void ScheduleRelease(SkillProfile p, int delayMs)
         {
-            this.releaseScheduled = true;
+            p.ReleaseScheduled = true;
             long start = Stopwatch.GetTimestamp();
             long target = start + (long)(delayMs / 1000.0 * Stopwatch.Frequency);
             Task.Run(() =>
@@ -284,56 +453,79 @@ namespace PerfectTiming
                         Thread.SpinWait(40);
                     }
 
-                    this.SkillUp();
+                    this.SkillUp(p);
                 }
                 finally
                 {
-                    this.releaseScheduled = false;
+                    p.ReleaseScheduled = false;
                 }
             });
         }
 
-        private void SkillDown()
+        private void SkillDown(SkillProfile p)
         {
-            if (this.skillHeld)
+            if (p.SkillHeld)
             {
                 return;
             }
 
-            this.skillHeld = true;
-            if (this.Settings.SkillIsMouse)
+            p.SkillHeld = true;
+            long token = ++p.HoldToken;
+            if (p.SkillIsMouse)
             {
-                Input.MouseDown((Input.MouseButton)Math.Clamp(this.Settings.SkillMouseButton, 0, 2));
+                Input.MouseDown((Input.MouseButton)Math.Clamp(p.SkillMouseButton, 0, 2));
             }
-            else if (this.Settings.SkillKey != 0)
+            else if (p.SkillKey != 0)
             {
-                Input.KeyDown(this.Settings.SkillKey);
+                Input.KeyDown(p.SkillKey);
             }
+
+            // Watchdog: guarantee a release even if the render loop stalls (overlay hidden / alt-tab /
+            // menu) before the timed release fires. No-op if this hold already ended (token mismatch).
+            int maxHoldMs = Math.Max(1500, p.ReleaseDelayMs + 900);
+            Task.Run(() =>
+            {
+                Thread.Sleep(maxHoldMs);
+                if (p.SkillHeld && p.HoldToken == token)
+                {
+                    this.SkillUp(p);
+                }
+            });
         }
 
-        private void SkillUp()
+        private void SkillUp(SkillProfile p)
         {
-            if (!this.skillHeld)
+            if (!p.SkillHeld)
             {
                 return;
             }
 
-            this.skillHeld = false;
-            if (this.Settings.SkillIsMouse)
+            p.SkillHeld = false;
+            if (p.SkillIsMouse)
             {
-                Input.MouseUp((Input.MouseButton)Math.Clamp(this.Settings.SkillMouseButton, 0, 2));
+                Input.MouseUp((Input.MouseButton)Math.Clamp(p.SkillMouseButton, 0, 2));
             }
-            else if (this.Settings.SkillKey != 0)
+            else if (p.SkillKey != 0)
             {
-                Input.KeyUp(this.Settings.SkillKey);
+                Input.KeyUp(p.SkillKey);
             }
         }
 
-        private void ForceReleaseIfHeld()
+        private void ReleaseAllProfiles()
         {
-            if (this.skillHeld)
+            if (this.Settings.Profiles == null)
             {
-                this.SkillUp();
+                return;
+            }
+
+            foreach (var p in this.Settings.Profiles)
+            {
+                if (p.SkillHeld)
+                {
+                    this.SkillUp(p);
+                }
+
+                p.Phase = 0;
             }
         }
 
@@ -343,74 +535,56 @@ namespace PerfectTiming
         // ── Settings UI ─────────────────────────────────────────────────────────────
         public override void DrawSettings()
         {
-            ImGui.TextWrapped("Auto hold+release for the Warrior 'Perfect Strike'. Hold the trigger key; " +
-                              "the plugin holds the skill, waits for the windup, and releases at the tuned time.");
-            ImGui.Separator();
-
-            ImGui.Checkbox("Enable auto Perfect Strike", ref this.Settings.AutoEnabled);
-
-            ImGui.Text($"Trigger key: {KeyName(this.Settings.TriggerKey)}");
+            ImGui.TextWrapped("Auto hold+release for charge/perfect skills (Perfect Strike, Snipe, ...). " +
+                              "Each profile has its own trigger key, output, animation ids and release delay.");
+            ImGui.Checkbox("Enable auto (master)", ref this.Settings.AutoEnabled);
             ImGui.SameLine();
-            if (ImGui.Button(this.capturingTrigger ? "press a key...##t" : "Set##trig"))
+            ImGui.TextDisabled($"{this.Settings.Profiles.Count} profile(s)");
+            if (ImGui.Button("Add skill profile"))
             {
-                this.capturingTrigger = true;
+                this.Settings.Profiles.Add(new SkillProfile { Name = $"Skill {this.Settings.Profiles.Count + 1}", Enabled = false });
             }
 
-            if (this.capturingTrigger && Input.TryCaptureKey(out var tvk))
+            int toDelete = -1;
+            if (ImGui.BeginTabBar("profiles", ImGuiTabBarFlags.AutoSelectNewTabs))
             {
-                this.Settings.TriggerKey = tvk;
-                this.capturingTrigger = false;
-            }
-
-            ImGui.Checkbox("Skill is a mouse button", ref this.Settings.SkillIsMouse);
-            if (this.Settings.SkillIsMouse)
-            {
-                string[] mb = { "Left", "Right", "Middle" };
-                ImGui.Combo("Mouse button", ref this.Settings.SkillMouseButton, mb, mb.Length);
-            }
-            else
-            {
-                ImGui.Text($"Skill key: {KeyName(this.Settings.SkillKey)}");
-                ImGui.SameLine();
-                if (ImGui.Button(this.capturingSkill ? "press a key...##s" : "Set##skill"))
+                for (int i = 0; i < this.Settings.Profiles.Count; i++)
                 {
-                    this.capturingSkill = true;
+                    var p = this.Settings.Profiles[i];
+                    bool open = true;
+                    var label = string.IsNullOrEmpty(p.Name) ? $"#{i}" : p.Name;
+                    if (ImGui.BeginTabItem($"{label}##tab{i}", ref open, ImGuiTabItemFlags.NoAssumedClosure))
+                    {
+                        this.DrawProfile(p, i);
+                        ImGui.EndTabItem();
+                    }
+
+                    if (!open)
+                    {
+                        toDelete = i;
+                    }
                 }
 
-                if (this.capturingSkill && Input.TryCaptureKey(out var svk))
+                ImGui.EndTabBar();
+            }
+
+            if (toDelete >= 0 && toDelete < this.Settings.Profiles.Count)
+            {
+                var pp = this.Settings.Profiles[toDelete];
+                if (pp.SkillHeld)
                 {
-                    this.Settings.SkillKey = svk;
-                    this.capturingSkill = false;
+                    this.SkillUp(pp);
                 }
-            }
 
-            ImGui.SliderInt("Release delay (ms)", ref this.Settings.ReleaseDelayMs, 200, 900);
-            Draw.ToolTip("Time from windup start (anim 461) to release. Tune so the perfect rate below is highest.");
-            ImGui.Checkbox("Repeat while trigger held", ref this.Settings.RepeatWhileHeld);
-            ImGui.Checkbox("Auto-tune delay toward perfect", ref this.Settings.AutoTune);
-            Draw.ToolTip("On repeated misses, walks the delay down (misses cluster at max windup) until perfect returns.");
-
-            ImGui.Separator();
-            int rec = this.recent.Count;
-            int recHits = 0;
-            foreach (var b in this.recent)
-            {
-                if (b) recHits++;
-            }
-
-            ImGui.Text($"Perfect: {this.hits}    Miss: {this.misses}    Last: {(this.lastPerfect ? "PERFECT" : "-")}");
-            ImGui.Text($"Recent perfect rate: {(rec > 0 ? 100 * recHits / rec : 0)}%   (last {rec})");
-            ImGui.Text($"Phase: {this.phase}    SkillHeld: {this.skillHeld}");
-            if (ImGui.Button("Reset stats"))
-            {
-                this.hits = 0;
-                this.misses = 0;
-                this.recent.Clear();
+                this.Settings.Profiles.RemoveAt(toDelete);
             }
 
             ImGui.Separator();
             if (ImGui.CollapsingHeader("Probe / diagnostics"))
             {
+                ImGui.TextDisabled("Recent AnimationIds (hold a skill: the sustained id is the windup; " +
+                                   "the brief ids after release are the perfect / normal outcomes):");
+                ImGui.Text(string.Join("  ->  ", this.recentAnims));
                 ImGui.Checkbox("Show probe window", ref this.Settings.ShowProbe);
                 ImGui.InputText("Target skill match", ref this.Settings.TargetSkillMatch, 64);
                 ImGui.SliderInt("Slots to show", ref this.Settings.SlotsToShow, 8, 64);
@@ -431,9 +605,99 @@ namespace PerfectTiming
             }
         }
 
+        private void DrawProfile(SkillProfile p, int i)
+        {
+            ImGui.InputText($"Name##n{i}", ref p.Name, 32);
+            ImGui.Checkbox($"Enabled##e{i}", ref p.Enabled);
+
+            ImGui.Text($"Trigger key: {KeyName(p.TriggerKey)}");
+            ImGui.SameLine();
+            if (ImGui.Button(this.capturingTriggerIdx == i ? $"press a key...##t{i}" : $"Set##t{i}"))
+            {
+                this.capturingTriggerIdx = i;
+            }
+
+            if (this.capturingTriggerIdx == i && Input.TryCaptureKey(out var tvk))
+            {
+                p.TriggerKey = tvk;
+                this.capturingTriggerIdx = -1;
+            }
+
+            ImGui.Checkbox($"Skill is a mouse button##m{i}", ref p.SkillIsMouse);
+            if (p.SkillIsMouse)
+            {
+                string[] mb = { "Left", "Right", "Middle" };
+                ImGui.Combo($"Mouse button##mb{i}", ref p.SkillMouseButton, mb, mb.Length);
+            }
+            else
+            {
+                ImGui.Text($"Skill key: {KeyName(p.SkillKey)}");
+                ImGui.SameLine();
+                if (ImGui.Button(this.capturingSkillIdx == i ? $"press a key...##s{i}" : $"Set##s{i}"))
+                {
+                    this.capturingSkillIdx = i;
+                }
+
+                if (this.capturingSkillIdx == i && Input.TryCaptureKey(out var svk))
+                {
+                    p.SkillKey = svk;
+                    this.capturingSkillIdx = -1;
+                }
+            }
+
+            ImGui.InputInt($"Windup anim##w{i}", ref p.WindupAnim);
+            ImGui.InputInt($"Perfect anim##p{i}", ref p.PerfectAnim);
+            ImGui.InputInt($"Normal (end) anim##end{i}", ref p.EndAnim);
+            Draw.ToolTip("Use the probe: hold the skill to see the sustained windup id; release to see the perfect vs normal ids.");
+
+            ImGui.Checkbox($"Only fire on a live monster under cursor##om{i}", ref p.OnlyOnMonster);
+            if (p.OnlyOnMonster)
+            {
+                ImGui.SliderFloat($"Cursor radius (px)##cr{i}", ref p.CursorRadius, 20f, 220f);
+            }
+
+            ImGui.Checkbox($"Auto-scale to windup (attack-speed proof)##sw{i}", ref p.ScaleToWindup);
+            Draw.ToolTip("Periodically lets a strike complete naturally to measure the windup, then releases " +
+                         "at a fraction of it — so the timing tracks attack-speed changes automatically.");
+            if (p.ScaleToWindup)
+            {
+                ImGui.SliderFloat($"Release fraction##rf{i}", ref p.ReleaseFraction, 0.5f, 0.98f, "%.2f");
+                ImGui.TextDisabled($"Measured windup: {p.WindupEst:F0} ms  ->  release ~{p.ReleaseFraction * p.WindupEst:F0} ms");
+            }
+            else
+            {
+                ImGui.SliderInt($"Release delay (ms)##d{i}", ref p.ReleaseDelayMs, 150, 1200);
+            }
+
+            Draw.ToolTip("Tune so the perfect rate below is highest (or turn on Auto-tune).");
+            ImGui.Checkbox($"Repeat while held##r{i}", ref p.RepeatWhileHeld);
+            ImGui.Checkbox($"Auto-tune##at{i}", ref p.AutoTune);
+
+            ImGui.Separator();
+            int rec = p.Recent.Count;
+            int recHits = 0;
+            foreach (var b in p.Recent)
+            {
+                if (b) recHits++;
+            }
+
+            ImGui.Text($"Perfect: {p.Hits}   Miss: {p.Misses}   Last: {(p.LastPerfect ? "PERFECT" : "-")}");
+            ImGui.Text($"Recent perfect rate: {(rec > 0 ? 100 * recHits / rec : 0)}%   Phase:{p.Phase}  Held:{p.SkillHeld}");
+            if (ImGui.Button($"Reset stats##rs{i}"))
+            {
+                p.Hits = 0;
+                p.Misses = 0;
+                p.Recent.Clear();
+                p.WindowHits = 0;
+                p.WindowCount = 0;
+                p.LastRate = -1;
+                p.TuneDir = 0;
+            }
+        }
+
         private static string KeyName(int vk) => vk == 0 ? "(none)" : $"0x{vk:X2} ({vk})";
 
-        // ── Probe (kept for diagnostics) ────────────────────────────────────────────
+        // ── Probe (kept for RE / finding a new skill's animation ids) ───────────────
         private static SkillInfo? PickTarget(List<SkillInfo> skills, string match)
         {
             foreach (var s in skills)
@@ -450,7 +714,7 @@ namespace PerfectTiming
         private void DrawProbe(IntPtr actor, int animId, List<SkillInfo> skills, SkillInfo? target)
         {
             ImGui.SetNextWindowBgAlpha(0.9f);
-            if (ImGui.Begin("Perfect Strike Probe"))
+            if (ImGui.Begin("Perfect Timing Probe"))
             {
                 if (actor == IntPtr.Zero)
                 {
@@ -460,6 +724,7 @@ namespace PerfectTiming
                 }
 
                 ImGui.Text($"AnimationId: {animId}  (0x{animId:X})");
+                ImGui.Text($"Recent: {string.Join(" -> ", this.recentAnims)}");
                 ImGui.Text($"Active skills: {skills.Count}");
                 ImGui.Separator();
                 if (target.HasValue)
@@ -471,7 +736,7 @@ namespace PerfectTiming
                     int slots = Math.Clamp(this.Settings.SlotsToShow, 1, SkillStructBytes / 4);
                     var bytes = Mem.ReadBytes(t.Details, slots * 4);
                     if (bytes.Length >= slots * 4 &&
-                        ImGui.BeginTable("slots", 3, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(0f, 240f)))
+                        ImGui.BeginTable("slots", 3, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY, new Vector2(0f, 220f)))
                     {
                         ImGui.TableSetupColumn("offset");
                         ImGui.TableSetupColumn("int32");
@@ -588,7 +853,6 @@ namespace PerfectTiming
             return sb.ToString();
         }
 
-        // Resolve a named component off an entity via its component table (from the Economy ritual reader).
         private static IntPtr ResolveComponent(IntPtr entity, string name)
         {
             if (entity == IntPtr.Zero)

@@ -8,13 +8,13 @@
 
 **A Path of Exile 2 overlay that does the boring parts for you.**
 
-Map smarter, loot faster, and never alt-tab to a price site again. CoreExile2 reads the running game, draws an ImGui overlay on top, and loads 16 feature plugins at runtime — and one self-updating launcher keeps the whole thing current.
+Map smarter, loot faster, and never alt-tab to a price site again. CoreExile2 reads the running game, draws an ImGui overlay on top, and loads 17 feature plugins at runtime — and one self-updating launcher keeps the whole thing current.
 
 ![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows&logoColor=white)
 ![Game](https://img.shields.io/badge/Path%20of%20Exile%202-supported-c79030)
 ![Version](https://img.shields.io/badge/version-2.5.0-success)
-![Plugins](https://img.shields.io/badge/plugins-16-blue)
+![Plugins](https://img.shields.io/badge/plugins-17-blue)
 
 </div>
 
@@ -66,6 +66,7 @@ Jump to the part you came for. Every plugin below ships today.
 | **AutoHotKeyTrigger** | Rule-based automation — trigger keys when conditions hit. |
 | **CustomHotkeys** | Your own hotkey macros and key remaps. |
 | **MapClearBot** | Full automated clearing: A\* pathfinding, reachability-based exploration, combat, loot, and stuck/flee recovery. |
+| **PerfectTiming** | Auto hold+release for charge / "perfect" skills (Perfect Strike, Snipe, …): times the release to the sweet spot for the damage/armour-break bonus, **auto-scales to your attack speed**, and only fires on a **live monster under the cursor**. |
 
 ### 🩸 On-screen info & league content
 

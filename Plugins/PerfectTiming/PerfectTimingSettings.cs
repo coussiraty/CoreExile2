@@ -1,53 +1,113 @@
 namespace PerfectTiming
 {
+    using System.Collections.Generic;
     using ExileBridge;
+    using Newtonsoft.Json;
 
-    /// <summary>Settings for PerfectTiming — auto hold+release for the Warrior "Perfect Strike".</summary>
-    public sealed class PerfectTimingSettings : IPluginSettings
+    /// <summary>
+    ///     A single "hold + release for perfect timing" skill (Perfect Strike, Snipe, etc.). Each has
+    ///     its own trigger key, skill output, animation ids, and tuned release delay, so several can be
+    ///     active at once.
+    /// </summary>
+    public sealed class SkillProfile
     {
-        // ── Auto strike ─────────────────────────────────────────────────────────────
-        /// <summary>Master toggle for the auto hold+release.</summary>
-        public bool AutoEnabled = false;
+        public string Name = "Perfect Strike";
+        public bool Enabled = true;
 
-        /// <summary>Virtual-key the user presses/holds to fire an auto Perfect Strike.</summary>
+        /// <summary>Virtual-key the user holds to fire this skill's perfect cycle.</summary>
         public int TriggerKey = 0;
 
-        /// <summary>When true, the skill output is a mouse button; otherwise a keyboard key.</summary>
+        /// <summary>Skill output is a mouse button (vs a keyboard key).</summary>
         public bool SkillIsMouse = true;
 
-        /// <summary>Mouse button used for the skill (0 = Left, 1 = Right, 2 = Middle).</summary>
+        /// <summary>Mouse button used (0 = Left, 1 = Right, 2 = Middle).</summary>
         public int SkillMouseButton = 1;
 
-        /// <summary>Keyboard virtual-key used for the skill (when not a mouse button).</summary>
+        /// <summary>Keyboard virtual-key used (when not a mouse button).</summary>
         public int SkillKey = 0;
 
-        /// <summary>Delay (ms) from windup start (anim 461) to release. This is what "perfect" tunes.</summary>
-        public int ReleaseDelayMs = 540;
-
-        /// <summary>Repeat strikes while the trigger key stays held.</summary>
-        public bool RepeatWhileHeld = true;
-
-        /// <summary>Nudge the release delay toward the perfect outcome automatically.</summary>
-        public bool AutoTune = false;
-
-        // ── Animation ids (exposed in case a patch shifts them) ─────────────────────
-        /// <summary>Animation id while charging/holding the windup.</summary>
+        /// <summary>AnimationId while charging/holding the windup (find via the probe).</summary>
         public int WindupAnim = 461;
 
-        /// <summary>Animation id of the PERFECT release outcome (the target).</summary>
+        /// <summary>AnimationId of the PERFECT release outcome (the target).</summary>
         public int PerfectAnim = 463;
 
-        /// <summary>Animation id of a non-perfect (normal) release outcome.</summary>
+        /// <summary>AnimationId of a normal (non-perfect) release outcome.</summary>
+        public int EndAnim = 462;
+
+        /// <summary>Delay (ms) from windup start to release — used when ScaleToWindup is off.</summary>
+        public int ReleaseDelayMs = 540;
+
+        /// <summary>
+        ///     Auto-scale the release to the live windup length (robust to attack-speed changes): the
+        ///     plugin periodically lets a strike complete naturally to measure the windup, then releases
+        ///     at <see cref="ReleaseFraction" /> of it.
+        /// </summary>
+        public bool ScaleToWindup = true;
+
+        /// <summary>Fraction of the measured windup to release at (the "perfect" point).</summary>
+        public float ReleaseFraction = 0.8f;
+
+        /// <summary>Only fire when a live monster is under/near the cursor (skip loot/ground clicks).</summary>
+        public bool OnlyOnMonster = true;
+
+        /// <summary>Screen-pixel radius around the cursor to look for a live monster.</summary>
+        public float CursorRadius = 70f;
+
+        /// <summary>Repeat while the trigger key stays held.</summary>
+        public bool RepeatWhileHeld = true;
+
+        /// <summary>Nudge the release timing toward the perfect outcome automatically.</summary>
+        public bool AutoTune = false;
+
+        // ── runtime state (not persisted) ───────────────────────────────────────────
+        [JsonIgnore] public int Phase; // 0 idle, 1 wait-windup, 2 charging, 3 wait-outcome
+        [JsonIgnore] public long PressTicks;
+        [JsonIgnore] public long OutcomeStart;
+        [JsonIgnore] public volatile bool ReleaseScheduled;
+        [JsonIgnore] public volatile bool SkillHeld;
+        [JsonIgnore] public long HoldToken;
+        [JsonIgnore] public double WindupEst;
+        [JsonIgnore] public long WindupStartTicks;
+        [JsonIgnore] public int StrikeCount;
+        [JsonIgnore] public int StrikeDelayMs;
+        [JsonIgnore] public bool ProbeStrike;
+        [JsonIgnore] public int TuneDir;
+        [JsonIgnore] public int WindowHits;
+        [JsonIgnore] public int WindowCount;
+        [JsonIgnore] public double LastRate = -1;
+        [JsonIgnore] public bool TriggerWasDown;
+        [JsonIgnore] public int ConsecMiss;
+        [JsonIgnore] public int Hits;
+        [JsonIgnore] public int Misses;
+        [JsonIgnore] public bool LastPerfect;
+        [JsonIgnore] public Queue<bool> Recent = new();
+    }
+
+    /// <summary>Settings for PerfectTiming — auto hold+release for charge/perfect skills.</summary>
+    public sealed class PerfectTimingSettings : IPluginSettings
+    {
+        /// <summary>Master toggle for all profiles.</summary>
+        public bool AutoEnabled = false;
+
+        /// <summary>Configured skills. Seeded from the legacy flat fields on first load.</summary>
+        public List<SkillProfile> Profiles = new();
+
+        // ── Legacy v1 flat fields — used only to seed the first profile on migration ──
+        public int TriggerKey = 0;
+        public bool SkillIsMouse = true;
+        public int SkillMouseButton = 1;
+        public int SkillKey = 0;
+        public int ReleaseDelayMs = 540;
+        public bool RepeatWhileHeld = true;
+        public bool AutoTune = false;
+        public int WindupAnim = 461;
+        public int PerfectAnim = 463;
         public int EndAnim = 462;
 
         // ── Probe / diagnostics ─────────────────────────────────────────────────────
-        /// <summary>Show the live probe window (Actor animation + skill struct values).</summary>
         public bool ShowProbe = false;
-
-        /// <summary>Case-insensitive substring used to pick the "target" skill to inspect/log.</summary>
         public string TargetSkillMatch = "Perfect";
-
-        /// <summary>How many int32 slots of the skill-details struct to show live (from offset 0).</summary>
         public int SlotsToShow = 40;
     }
 }

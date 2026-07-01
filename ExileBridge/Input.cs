@@ -56,6 +56,7 @@ namespace ExileBridge
         private static readonly BlockingCollection<Action> Queue = new(new ConcurrentQueue<Action>());
         private static readonly object HeldLock = new();
         private static readonly HashSet<int> HeldKeys = new();
+        private static readonly HashSet<MouseButton> HeldMouse = new();
         private static int pending;
 
         static Input()
@@ -197,9 +198,10 @@ namespace ExileBridge
         public static void ReleaseAllHeld()
         {
             int[] keys;
+            MouseButton[] mice;
             lock (HeldLock)
             {
-                if (HeldKeys.Count == 0)
+                if (HeldKeys.Count == 0 && HeldMouse.Count == 0)
                 {
                     return;
                 }
@@ -207,6 +209,10 @@ namespace ExileBridge
                 keys = new int[HeldKeys.Count];
                 HeldKeys.CopyTo(keys);
                 HeldKeys.Clear();
+
+                mice = new MouseButton[HeldMouse.Count];
+                HeldMouse.CopyTo(mice);
+                HeldMouse.Clear();
             }
 
             foreach (var vk in keys)
@@ -214,6 +220,24 @@ namespace ExileBridge
                 try
                 {
                     keybd_event((byte)vk, 0, KeyeventfKeyup, UIntPtr.Zero);
+                }
+                catch
+                {
+                    // best-effort release during teardown
+                }
+            }
+
+            foreach (var b in mice)
+            {
+                try
+                {
+                    var up = b switch
+                    {
+                        MouseButton.Right => MouseeventfRightup,
+                        MouseButton.Middle => MouseeventfMiddleup,
+                        _ => MouseeventfLeftup,
+                    };
+                    mouse_event(up, 0, 0, 0, UIntPtr.Zero);
                 }
                 catch
                 {
@@ -264,6 +288,11 @@ namespace ExileBridge
                 _ => MouseeventfLeftdown,
             };
 
+            lock (HeldLock)
+            {
+                HeldMouse.Add(button);
+            }
+
             Enqueue(() => mouse_event(down, 0, 0, 0, UIntPtr.Zero));
         }
 
@@ -277,6 +306,11 @@ namespace ExileBridge
                 MouseButton.Middle => MouseeventfMiddleup,
                 _ => MouseeventfLeftup,
             };
+
+            lock (HeldLock)
+            {
+                HeldMouse.Remove(button);
+            }
 
             Enqueue(() => mouse_event(up, 0, 0, 0, UIntPtr.Zero));
         }
