@@ -1,4 +1,4 @@
-﻿// <copyright file="HealthBarsSettings.cs" company="PlaceholderCompany">
+// <copyright file="HealthBarsSettings.cs" company="PlaceholderCompany">
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
@@ -12,6 +12,11 @@ namespace HealthBars
     /// </summary>
     public sealed class HealthBarsSettings : IPluginSettings
     {
+        /// <summary>
+        ///     Use gradient textures globally for all bars (overrides per-config).
+        /// </summary>
+        public bool UseGradientBarsGlobal = false;
+
         /// <summary>
         ///     Draw Healthbars when in town.
         /// </summary>
@@ -35,17 +40,12 @@ namespace HealthBars
         /// <summary>
         ///     Interpolate entity position to minimize flicker effect.
         /// </summary>
-        public bool InterpolatePosition = false;
+        public bool InterpolatePosition = true;
 
         /// <summary>
         ///     Interpolate entity position rate to minimize flickering effect.
         /// </summary>
         public int InterpolationRate = 400;
-
-        /// <summary>
-        ///     Gets a value indicating if user want to see mana on the healthbar rather than energyshield.
-        /// </summary>
-        public bool ShowManaRatherThanESOnSelf = false;
 
         /// <summary>
         ///     Healthbar config for monsters.
@@ -56,7 +56,7 @@ namespace HealthBars
             { "magic",    new(new(0f, 0.5f, 1f, 1f), 10f) },
             { "rare",     new(new(1f, 1f, 0f, 1f), 9, true, 16f) },
             { "unique",   new(new(1f, 0.5f, 0f, 1f), 9, true, 16f) },
-            { "friendly", new(new(0f, 1f, 0f, 1f)) },
+            { "friendly", new(new(0f, 1f, 0f, 1f)) { Scale = new(64f, 8f), HalfOfScale = new(32f, 4f) } },
         };
 
         /// <summary>
@@ -72,9 +72,17 @@ namespace HealthBars
         /// </summary>
         public Dictionary<string, Config> Player = new()
         {
-            { "self", new(new(1f, 0f, 1f, 1f)) },
+            { "self", new(new(1f, 0f, 0f, 1f))
+                {
+                    ShowManaBar = true,
+                    UseIndividualBarScale = true,
+                    HealthScale = new(128f, 6f),
+                    ESScale = new(128f, 4f),
+                    ManaScale = new(128f, 4f),
+                }
+            },
             { "leader", new(new(1f, 0f, 1f, 1f)) },
-            { "member", new(new(0.5f, 1f, 0.5f, 1f)) },
+            { "member", new(new(1f, 0f, 0f, 1f)) },
         };
     }
 }

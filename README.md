@@ -132,6 +132,7 @@ Several bundled plugins are **adaptations of other people's work**, ported to Ex
 | --- | --- |
 | **Economy** | [zx0CF1/StashValue](https://github.com/zx0CF1/StashValue) · [yokkenUA/RunecraftHelper](https://github.com/yokkenUA/RunecraftHelper) · [AlexanderHel/RitualHelper](https://github.com/AlexanderHel/RitualHelper) |
 | **MapKillCounter** | [MordWraith/MapKillCounter](https://github.com/MordWraith/MapKillCounter) |
+| **HealthBars** | [MordWraith/SimpleBars](https://github.com/MordWraith/SimpleBars) |
 | **SekhemaHelper** | [yokkenUA/SekhemaHelper](https://github.com/yokkenUA/SekhemaHelper) |
 
 If you're one of these authors and would like different credit, additional attribution, or removal, please [open an issue](https://github.com/coussiraty/CoreExile2/issues).
