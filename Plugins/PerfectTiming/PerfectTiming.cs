@@ -34,6 +34,19 @@ namespace PerfectTiming
         private const int ActorWindowStart = 0x880;
         private const int ActorWindowBytes = 0x80;
 
+        // Full-Actor dump for hunting the "perfect window" / charge value the game must update.
+        private const int ActorWideStart = 0x000;
+        private const int ActorWideBytes = 0xE00;
+
+        // Stats component (StatsOffsets): two stat layers, each a StatsStructInternal whose stat
+        // vector (StatArrayStruct {int key; int value}) is at +0xF8.
+        private const int StatsItemsLayerOffset = 0x160;
+        private const int StatsBuffLayerOffset = 0x1C8;
+        private const int StatsVectorInStruct = 0xF8;
+
+        // Attack-speed-related stat ids (GameStats.cs; the grepped values are "<n> + 1").
+        private static readonly int[] SpeedStatIds = { 71, 72, 73, 79, 284, 327, 331, 338, 358, 1647, 1909 };
+
         // Auto-tune: walk the delay down (misses cluster at max windup) and wrap when it under-shoots.
         private const int TuneStep = 8;
         private const int TuneFloor = 300;
@@ -46,6 +59,7 @@ namespace PerfectTiming
 
         private StreamWriter csv;
         private long logStartMs;
+        private IntPtr lastActor;
 
         private string SettingPathname => Path.Join(this.DirectoryPath, "config", "settings.txt");
         private string LogPathname => Path.Join(this.DirectoryPath, "config", "probe_log.csv");
@@ -90,10 +104,6 @@ namespace PerfectTiming
             foreach (var p in this.Settings.Profiles)
             {
                 p.Recent ??= new Queue<bool>();
-                if (p.ReleaseFraction < 0.55f || p.ReleaseFraction > 0.92f)
-                {
-                    p.ReleaseFraction = 0.8f; // recover from a bad auto-tune that ran to the edge
-                }
             }
         }
 
@@ -133,13 +143,14 @@ namespace PerfectTiming
                 this.ReleaseAllProfiles();
                 if (this.Settings.ShowProbe)
                 {
-                    this.DrawProbe(IntPtr.Zero, int.MinValue, new List<SkillInfo>(), null);
+                    this.DrawProbe(IntPtr.Zero, int.MinValue, new List<SkillInfo>(), null, null, null);
                 }
 
                 return;
             }
 
             int animId = Mem.I32(actor + ActorAnimationIdOffset);
+            this.lastActor = actor;
             this.TrackAnim(animId);
 
             // Only drive input while the GAME is the foreground window — otherwise the synthetic
@@ -158,21 +169,24 @@ namespace PerfectTiming
                     continue;
                 }
 
-                this.UpdateAuto(p, animId);
+                this.UpdateAuto(p, animId, actor);
             }
 
             if (this.Settings.ShowProbe || this.csv != null)
             {
                 var skills = this.ReadSkills(actor);
                 SkillInfo? target = PickTarget(skills, this.Settings.TargetSkillMatch);
+                var statsComp = ResolveComponent(player.Address, "Stats");
+                var itemsStats = ReadStatLayer(statsComp, StatsItemsLayerOffset);
+                var buffStats = ReadStatLayer(statsComp, StatsBuffLayerOffset);
                 if (this.csv != null)
                 {
-                    this.LogFrame(actor, animId, target);
+                    this.LogFrame(actor, animId, target, buffStats);
                 }
 
                 if (this.Settings.ShowProbe)
                 {
-                    this.DrawProbe(actor, animId, skills, target);
+                    this.DrawProbe(actor, animId, skills, target, itemsStats, buffStats);
                 }
             }
         }
@@ -190,7 +204,7 @@ namespace PerfectTiming
         }
 
         // ── Per-profile auto hold + release state machine ───────────────────────────
-        private void UpdateAuto(SkillProfile p, int animId)
+        private void UpdateAuto(SkillProfile p, int animId, IntPtr actor)
         {
             bool triggerDown = p.TriggerKey != 0 && Input.IsKeyDown(p.TriggerKey);
             bool edge = triggerDown && !p.TriggerWasDown;
@@ -227,18 +241,28 @@ namespace PerfectTiming
                     else if (animId == p.WindupAnim)
                     {
                         p.WindupStartTicks = now;
-                        bool probe = p.ScaleToWindup && (p.WindupEst <= 0 || (p.StrikeCount % 20 == 0));
-                        p.ProbeStrike = probe;
-                        if (!probe)
+                        if (p.UseChargeValue)
                         {
-                            int delay = p.ScaleToWindup
-                                ? (int)Math.Clamp(p.ReleaseFraction * p.WindupEst, 60, 3000)
-                                : p.ReleaseDelayMs;
-                            p.StrikeDelayMs = delay;
-                            this.ScheduleRelease(p, delay);
+                            // Charge-based: an off-thread tight-poll releases at the exact threshold crossing.
+                            p.ProbeStrike = false;
+                            this.ScheduleChargeRelease(p, actor);
+                            p.Phase = 2;
                         }
+                        else
+                        {
+                            bool probe = p.ScaleToWindup && (p.WindupEst <= 0 || (p.StrikeCount % 8 == 0));
+                            p.ProbeStrike = probe;
+                            if (!probe)
+                            {
+                                int delay = (p.ScaleToWindup && p.WindupRef > 0 && p.WindupEst > 0)
+                                    ? (int)Math.Clamp(p.ReleaseDelayMs * (p.WindupEst / p.WindupRef), 60, 3000)
+                                    : p.ReleaseDelayMs;
+                                p.StrikeDelayMs = delay;
+                                this.ScheduleRelease(p, delay);
+                            }
 
-                        p.Phase = 2;
+                            p.Phase = 2;
+                        }
                     }
                     else if (ElapsedMs(p.PressTicks, now) > 700)
                     {
@@ -253,7 +277,16 @@ namespace PerfectTiming
                     break;
 
                 case 2: // Charging
-                    if (p.ProbeStrike)
+                    if (p.UseChargeValue)
+                    {
+                        // The off-thread tight-poll fires SkillUp at the exact crossing; wait for it.
+                        if (!p.ReleaseScheduled)
+                        {
+                            p.OutcomeStart = now;
+                            p.Phase = 3;
+                        }
+                    }
+                    else if (p.ProbeStrike)
                     {
                         // Probe: let the windup end on its own to measure its length (and fire one normal hit),
                         // releasing the instant its outcome anim appears.
@@ -266,6 +299,11 @@ namespace PerfectTiming
 
                             long tOut = ElapsedMs(p.WindupStartTicks, now);
                             p.WindupEst = p.WindupEst <= 0 ? tOut : ((0.5 * tOut) + (0.5 * p.WindupEst));
+                            if (p.WindupRef <= 0)
+                            {
+                                p.WindupRef = p.WindupEst; // auto-anchor the scaling on the first measurement
+                            }
+
                             p.StrikeCount++;
                             p.ProbeStrike = false;
                             this.EndCycle(p, triggerDown);
@@ -297,6 +335,10 @@ namespace PerfectTiming
                         if (p.ScaleToWindup && tOut < p.StrikeDelayMs - 40)
                         {
                             p.WindupEst = p.WindupEst <= 0 ? tOut : ((0.5 * tOut) + (0.5 * p.WindupEst));
+                            if (p.WindupRef <= 0)
+                            {
+                                p.WindupRef = p.WindupEst;
+                            }
                         }
 
                         this.RecordOutcome(p, animId == p.PerfectAnim, tOut);
@@ -382,55 +424,52 @@ namespace PerfectTiming
             {
                 p.Recent.Dequeue();
             }
+        }
 
-            if (!p.AutoTune)
+        // Charge-based release: tight-poll the live animation-phase value off-thread and release the
+        // instant it crosses the threshold (~microsecond precision vs the 16ms render frame).
+        private void ScheduleChargeRelease(SkillProfile p, IntPtr actor)
+        {
+            p.ReleaseScheduled = true;
+            var addr = (IntPtr)(actor.ToInt64() + p.ChargeOffset);
+            float threshold = p.PerfectPhase;
+            long start = Stopwatch.GetTimestamp();
+            long timeout = start + (long)(2.0 * Stopwatch.Frequency);
+            Task.Run(() =>
             {
-                return;
-            }
-
-            if (p.ScaleToWindup)
-            {
-                // Hill-climb the fraction on measured hit-rate: sample a window of strikes, then step in
-                // whatever direction improves the perfect rate (reverse when it gets worse). A single
-                // miss can't tell "too early" from "too late", so we tune on the rate, not per-miss.
-                p.WindowCount++;
-                if (perfect)
+                try
                 {
-                    p.WindowHits++;
-                }
-
-                if (p.WindowCount >= 8)
-                {
-                    double rate = (double)p.WindowHits / p.WindowCount;
-                    if (p.TuneDir == 0)
+                    while (true)
                     {
-                        p.TuneDir = -1; // the perfect point sits below max, so probe downward first
-                    }
+                        float charge = Mem.Read<float>(addr);
+                        if (charge >= threshold && charge <= 2f)
+                        {
+                            this.SkillUp(p);
+                            break;
+                        }
 
-                    if (p.LastRate >= 0 && rate < p.LastRate - 0.05)
-                    {
-                        p.TuneDir = -p.TuneDir;
-                    }
+                        if (Stopwatch.GetTimestamp() > timeout)
+                        {
+                            this.SkillUp(p);
+                            break;
+                        }
 
-                    p.LastRate = rate;
-                    p.ReleaseFraction = (float)Math.Clamp(p.ReleaseFraction + (p.TuneDir * 0.03), 0.55, 0.95);
-                    p.WindowHits = 0;
-                    p.WindowCount = 0;
+                        // Coarse wait while far from the threshold, tight spin as it approaches.
+                        if (charge < threshold - 0.06f)
+                        {
+                            Thread.Sleep(2);
+                        }
+                        else
+                        {
+                            Thread.SpinWait(400);
+                        }
+                    }
                 }
-            }
-            else if (perfect)
-            {
-                p.ConsecMiss = 0;
-            }
-            else if (++p.ConsecMiss >= 2)
-            {
-                p.ConsecMiss = 0;
-                p.ReleaseDelayMs -= TuneStep;
-                if (p.ReleaseDelayMs < TuneFloor)
+                finally
                 {
-                    p.ReleaseDelayMs = TuneCeil;
+                    p.ReleaseScheduled = false;
                 }
-            }
+            });
         }
 
         private void ScheduleRelease(SkillProfile p, int delayMs)
@@ -656,22 +695,39 @@ namespace PerfectTiming
                 ImGui.SliderFloat($"Cursor radius (px)##cr{i}", ref p.CursorRadius, 20f, 220f);
             }
 
-            ImGui.Checkbox($"Auto-scale to windup (attack-speed proof)##sw{i}", ref p.ScaleToWindup);
-            Draw.ToolTip("Periodically lets a strike complete naturally to measure the windup, then releases " +
-                         "at a fraction of it — so the timing tracks attack-speed changes automatically.");
-            if (p.ScaleToWindup)
+            ImGui.Checkbox($"Release on charge value (recommended)##uc{i}", ref p.UseChargeValue);
+            Draw.ToolTip("Releases exactly when the live animation-charge value crosses the threshold — precise " +
+                         "and independent of attack speed. Set the threshold once and it works at any speed.");
+            if (p.UseChargeValue)
             {
-                ImGui.SliderFloat($"Release fraction##rf{i}", ref p.ReleaseFraction, 0.5f, 0.98f, "%.2f");
-                ImGui.TextDisabled($"Measured windup: {p.WindupEst:F0} ms  ->  release ~{p.ReleaseFraction * p.WindupEst:F0} ms");
+                float live = this.lastActor != IntPtr.Zero
+                    ? Mem.Read<float>((IntPtr)(this.lastActor.ToInt64() + p.ChargeOffset))
+                    : 0f;
+                ImGui.SliderFloat($"Perfect charge threshold##pp{i}", ref p.PerfectPhase, 0.20f, 0.49f, "%.3f");
+                Draw.ToolTip("Release when the charge reaches this. Hold the skill and watch 'live charge' ramp; " +
+                             "set the threshold just under where a full windup peaks (~0.43 for Perfect Strike).");
+                ImGui.TextDisabled($"live charge (hold the skill to watch it ramp): {live:0.000}");
+                ImGui.InputInt($"Charge offset##co{i}", ref p.ChargeOffset);
             }
             else
             {
-                ImGui.SliderInt($"Release delay (ms)##d{i}", ref p.ReleaseDelayMs, 150, 1200);
+                if (ImGui.SliderInt($"Release delay (ms)##d{i}", ref p.ReleaseDelayMs, 120, 1200) &&
+                    p.ScaleToWindup && p.WindupEst > 0)
+                {
+                    p.WindupRef = p.WindupEst;
+                }
+
+                ImGui.Checkbox($"Scale delay with attack speed##sw{i}", ref p.ScaleToWindup);
+                if (p.ScaleToWindup)
+                {
+                    int eff = (p.WindupRef > 0 && p.WindupEst > 0)
+                        ? (int)(p.ReleaseDelayMs * (p.WindupEst / p.WindupRef))
+                        : p.ReleaseDelayMs;
+                    ImGui.TextDisabled($"windup {p.WindupEst:F0} ms | anchored {p.WindupRef:F0} ms | firing {eff} ms");
+                }
             }
 
-            Draw.ToolTip("Tune so the perfect rate below is highest (or turn on Auto-tune).");
             ImGui.Checkbox($"Repeat while held##r{i}", ref p.RepeatWhileHeld);
-            ImGui.Checkbox($"Auto-tune##at{i}", ref p.AutoTune);
 
             ImGui.Separator();
             int rec = p.Recent.Count;
@@ -711,7 +767,8 @@ namespace PerfectTiming
             return skills.Count > 0 ? skills[0] : (SkillInfo?)null;
         }
 
-        private void DrawProbe(IntPtr actor, int animId, List<SkillInfo> skills, SkillInfo? target)
+        private void DrawProbe(IntPtr actor, int animId, List<SkillInfo> skills, SkillInfo? target,
+            Dictionary<int, int> itemsStats, Dictionary<int, int> buffStats)
         {
             ImGui.SetNextWindowBgAlpha(0.9f);
             if (ImGui.Begin("Perfect Timing Probe"))
@@ -756,6 +813,27 @@ namespace PerfectTiming
 
                         ImGui.EndTable();
                     }
+                }
+
+                if (buffStats != null && itemsStats != null)
+                {
+                    ImGui.Separator();
+                    ImGui.Text("Attack-speed stats (id: items + buff):");
+                    long sum = 0;
+                    foreach (var id in SpeedStatIds)
+                    {
+                        int iv = itemsStats.TryGetValue(id, out var a) ? a : 0;
+                        int bv = buffStats.TryGetValue(id, out var b) ? b : 0;
+                        if (iv != 0 || bv != 0)
+                        {
+                            ImGui.Text($"  {id}: {iv} + {bv}");
+                        }
+
+                        sum += (id == 338) ? -(iv + bv) : (iv + bv);
+                    }
+
+                    ImGui.Text($"  -> total attack speed %: {sum}   (buff-layer entries: {buffStats.Count})");
+                    ImGui.TextDisabled("Change your attack speed (frenzy / a buff) and watch this total move.");
                 }
             }
 
@@ -812,15 +890,11 @@ namespace PerfectTiming
             return result;
         }
 
-        private void LogFrame(IntPtr actor, int animId, SkillInfo? target)
+        private void LogFrame(IntPtr actor, int animId, SkillInfo? target, Dictionary<int, int> buffStats)
         {
             long t = Environment.TickCount64 - this.logStartMs;
-            var skillHex = target.HasValue ? ToHex(Mem.ReadBytes(target.Value.Details, SkillStructBytes)) : string.Empty;
-            var actorHex = ToHex(Mem.ReadBytes(actor + ActorWindowStart, ActorWindowBytes));
-            var name = target.HasValue ? target.Value.Name : string.Empty;
-            int useStage = target.HasValue ? target.Value.UseStage : 0;
-            int castType = target.HasValue ? target.Value.CastType : 0;
-            this.csv.WriteLine($"{t},{animId},{name},{useStage},{castType},{skillHex},{actorHex}");
+            var actorHex = ToHex(Mem.ReadBytes(actor + ActorWideStart, ActorWideBytes));
+            this.csv.WriteLine($"{t},{animId},{actorHex}");
         }
 
         private void StartLog()
@@ -829,7 +903,7 @@ namespace PerfectTiming
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
             this.csv = new StreamWriter(this.LogPathname, append: false) { AutoFlush = true };
-            this.csv.WriteLine("t_ms,animId,skill,useStage,castType,skillHex,actorHex");
+            this.csv.WriteLine("t_ms,animId,actorHex(0x000..0xE00)");
             this.logStartMs = Environment.TickCount64;
         }
 
@@ -851,6 +925,45 @@ namespace PerfectTiming
             foreach (var b in bytes)
                 sb.Append(b.ToString("x2"));
             return sb.ToString();
+        }
+
+        // Reads one stat layer of the Stats component into {statId -> value}.
+        private static Dictionary<int, int> ReadStatLayer(IntPtr statsComp, int layerOffset)
+        {
+            var result = new Dictionary<int, int>();
+            if (statsComp == IntPtr.Zero)
+            {
+                return result;
+            }
+
+            var layer = Mem.Ptr(statsComp + layerOffset);
+            if (layer == IntPtr.Zero)
+            {
+                return result;
+            }
+
+            var first = Mem.Ptr(layer + StatsVectorInStruct);
+            var last = Mem.Ptr(layer + StatsVectorInStruct + 8);
+            if (first == IntPtr.Zero || last == IntPtr.Zero)
+            {
+                return result;
+            }
+
+            long count = (last.ToInt64() - first.ToInt64()) / 8;
+            if (count <= 0 || count > 8000)
+            {
+                return result;
+            }
+
+            var bytes = Mem.ReadBytes(first, (int)count * 8);
+            for (int i = 0; i + 8 <= bytes.Length; i += 8)
+            {
+                int key = BitConverter.ToInt32(bytes, i);
+                int val = BitConverter.ToInt32(bytes, i + 4);
+                result[key] = val;
+            }
+
+            return result;
         }
 
         private static IntPtr ResolveComponent(IntPtr entity, string name)

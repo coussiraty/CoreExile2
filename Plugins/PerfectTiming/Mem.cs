@@ -46,7 +46,7 @@ namespace PerfectTiming
 
         public static byte[] ReadBytes(IntPtr address, int count)
         {
-            if (address == IntPtr.Zero || count <= 0 || count > 8192)
+            if (address == IntPtr.Zero || count <= 0 || count > 65536)
                 return Array.Empty<byte>();
             EnsureHandle();
             var buf = new byte[count];

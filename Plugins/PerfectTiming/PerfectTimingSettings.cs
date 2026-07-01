@@ -35,7 +35,19 @@ namespace PerfectTiming
         /// <summary>AnimationId of a normal (non-perfect) release outcome.</summary>
         public int EndAnim = 462;
 
-        /// <summary>Delay (ms) from windup start to release — used when ScaleToWindup is off.</summary>
+        /// <summary>
+        ///     Release on the live charge value (Actor+ChargeOffset, a 0..~0.5 animation-phase float)
+        ///     instead of a timer — precise and attack-speed independent. This is the good path.
+        /// </summary>
+        public bool UseChargeValue = true;
+
+        /// <summary>Charge/phase value to release at (the "perfect" point; ~0.43 for Perfect Strike).</summary>
+        public float PerfectPhase = 0.43f;
+
+        /// <summary>Actor offset of the animation-phase float (found via the probe; 0x340 for this build).</summary>
+        public int ChargeOffset = 0x340;
+
+        /// <summary>Delay (ms) from windup start to release — used only when UseChargeValue is off.</summary>
         public int ReleaseDelayMs = 540;
 
         /// <summary>
@@ -45,8 +57,8 @@ namespace PerfectTiming
         /// </summary>
         public bool ScaleToWindup = true;
 
-        /// <summary>Fraction of the measured windup to release at (the "perfect" point).</summary>
-        public float ReleaseFraction = 0.8f;
+        /// <summary>Windup length (ms) captured at calibration; the delay scales by WindupEst/WindupRef.</summary>
+        public double WindupRef;
 
         /// <summary>Only fire when a live monster is under/near the cursor (skip loot/ground clicks).</summary>
         public bool OnlyOnMonster = true;
