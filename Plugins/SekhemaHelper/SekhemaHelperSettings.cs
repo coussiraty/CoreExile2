@@ -20,5 +20,16 @@ namespace SekhemaHelper
 
         public bool DrawBestPath = true;
         public bool DebugEnable = false;
+
+        // Crystal Path (Death Crystal Run) — a walkable pickup route through the lethal Hourglass
+        // crystals in your current escape room, drawn on the large area map.
+        public bool ShowCrystalPath = true;
+        public bool CrystalWalkablePath = true;
+        public Vector4 CrystalRouteColor = new(1f, 0.85f, 0.2f, 1f);
+        public Vector4 CrystalMarkerColor = new(1f, 0.3f, 0.3f, 1f);
+        public float CrystalRouteThickness = 2f;
+        public float CrystalMarkerRadius = 9f;
+        public int CrystalIdGroupGap = 10;
+        public float CrystalRoomMargin = 30f;
     }
 }

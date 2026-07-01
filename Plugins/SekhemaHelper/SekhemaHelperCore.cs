@@ -15,6 +15,7 @@ namespace SekhemaHelper
     {
         private string SettingPathname => Path.Join(DirectoryPath, "config", "settings.txt");
         private WeightCalculator weightCalculator;
+        private readonly CrystalRoute crystalRoute = new();
         private bool dumpRequested;
 
         public override void OnEnable(bool isGameAttached)
@@ -64,6 +65,18 @@ namespace SekhemaHelper
             {
                 ColorSwatch("Debug Text Color", ref Settings.TextColor);
                 ColorSwatch("Debug Background", ref Settings.BackgroundColor);
+            }
+
+            ImGui.SeparatorText("Crystal Path (Escape rooms)");
+            ImGui.Checkbox("Show crystal pickup route", ref Settings.ShowCrystalPath);
+            if (Settings.ShowCrystalPath)
+            {
+                ImGui.TextDisabled("Drawn on the large area map. Open the map in an escape room.");
+                ImGui.Checkbox("Path along walkable ground (A*)", ref Settings.CrystalWalkablePath);
+                ColorSwatch("Route Color", ref Settings.CrystalRouteColor);
+                ColorSwatch("Marker Color", ref Settings.CrystalMarkerColor);
+                ImGui.SliderFloat("Route Thickness", ref Settings.CrystalRouteThickness, 1f, 6f);
+                ImGui.SliderFloat("Marker Radius", ref Settings.CrystalMarkerRadius, 3f, 20f);
             }
 
             DrawWeightSettings();
@@ -124,6 +137,11 @@ namespace SekhemaHelper
             bool ghForeground = Process.GetCurrentProcess().MainWindowHandle == GetForegroundWindow();
             if (!Ctx.Game.IsForeground && !ghForeground)
                 return;
+
+            // Death Crystal Run: independent of the trial-choice panel — it draws the walkable
+            // pickup route on the large area map (gated internally on LargeMap visibility).
+            if (Settings.ShowCrystalPath)
+                this.crystalRoute.Draw(Ctx, Settings);
 
             var drawList = ImGui.GetBackgroundDrawList();
             var panel = Ctx.Ui.SekhemaTrialPanel;
