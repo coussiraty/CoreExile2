@@ -253,6 +253,34 @@ namespace ExileBridge
             });
         }
 
+        /// <summary>Queues a mouse-button press (no release) — pair with <see cref="MouseUp" />.</summary>
+        /// <param name="button">which button.</param>
+        public static void MouseDown(MouseButton button = MouseButton.Left)
+        {
+            var down = button switch
+            {
+                MouseButton.Right => MouseeventfRightdown,
+                MouseButton.Middle => MouseeventfMiddledown,
+                _ => MouseeventfLeftdown,
+            };
+
+            Enqueue(() => mouse_event(down, 0, 0, 0, UIntPtr.Zero));
+        }
+
+        /// <summary>Queues a mouse-button release. Pair with <see cref="MouseDown" />.</summary>
+        /// <param name="button">which button.</param>
+        public static void MouseUp(MouseButton button = MouseButton.Left)
+        {
+            var up = button switch
+            {
+                MouseButton.Right => MouseeventfRightup,
+                MouseButton.Middle => MouseeventfMiddleup,
+                _ => MouseeventfLeftup,
+            };
+
+            Enqueue(() => mouse_event(up, 0, 0, 0, UIntPtr.Zero));
+        }
+
         /// <summary>Moves the cursor to an absolute desktop position (runs immediately).</summary>
         /// <param name="x">absolute X.</param>
         /// <param name="y">absolute Y.</param>
